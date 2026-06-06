@@ -2,6 +2,7 @@
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
     SendMessageTimeoutW, GUITHREADINFO, SMTO_ABORTIFHUNG,
@@ -70,7 +71,7 @@ fn send_message_timeout(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> O
 pub fn is_chinese_mode() -> bool {
     let hwnd = get_focused_window();
     let ime_hwnd = get_ime_window(hwnd);
-    
+
     if ime_hwnd.0.is_null() {
         return false;
     }
@@ -87,4 +88,14 @@ pub fn is_chinese_mode() -> bool {
     }
 
     false
+}
+
+/// 检测 Caps Lock 是否开启
+pub fn is_caps_lock_on() -> bool {
+    unsafe {
+        // VK_CAPITAL = 0x14
+        // GetKeyState 返回值的低字节为 1 表示开启
+        let state = GetKeyState(0x14);
+        (state & 0x0001) != 0
+    }
 }

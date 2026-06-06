@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, LoadIconW, IDI_APPLI
 
 use caret_detector::CaretDetector;
 use cursor_detector::CursorDetector;
-use ime_detector::is_chinese_mode;
+use ime_detector::{is_caps_lock_on, is_chinese_mode};
 use overlay::IndicatorOverlay;
 use tray::TrayManager;
 
@@ -104,6 +104,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
             config::caret_size(),
             config::caret_color_cn(),
             config::caret_color_en(),
+            config::caret_color_en_upper(),
             config::caret_offset_x(),
             config::caret_offset_y(),
         ))
@@ -117,6 +118,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
             config::mouse_size(),
             config::mouse_color_cn(),
             config::mouse_color_en(),
+            config::mouse_color_en_upper(),
             config::mouse_offset_x(),
             config::mouse_offset_y(),
         ))
@@ -129,6 +131,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
 
     let mut last_state_check_time = Instant::now();
     let mut chinese_mode = false;
+    let mut caps_lock_on = false;
     let mut caret_active = false;
     let mut mouse_active = false;
 
@@ -139,6 +142,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
         // A. 状态检测 (100ms)
         if now.duration_since(last_state_check_time) >= state_interval {
             chinese_mode = is_chinese_mode();
+            caps_lock_on = is_caps_lock_on();
 
             // Caret 状态判断
             if config::caret_enable() {
@@ -182,7 +186,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
         if config::caret_enable() && caret_active {
             if let Some(ref overlay) = caret_overlay {
                 if let Some((x, y, h)) = caret_detector.get_caret_pos() {
-                    overlay.update(x, y, chinese_mode, h);
+                    overlay.update(x, y, chinese_mode, caps_lock_on, h);
                 }
             }
         }
@@ -193,7 +197,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
                 let mut pt = POINT::default();
                 unsafe {
                     if GetCursorPos(&mut pt).is_ok() {
-                        overlay.update(pt.x, pt.y, chinese_mode, 0);
+                        overlay.update(pt.x, pt.y, chinese_mode, caps_lock_on, 0);
                     }
                 }
             }
