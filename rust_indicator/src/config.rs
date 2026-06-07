@@ -15,6 +15,7 @@ pub struct Config {
     pub poll_track_interval_ms: u64,
 
     pub tray_enable: bool,
+    pub debug_console: bool,
 
     pub caret_enable: bool,
     pub caret_color_cn: u32,
@@ -42,6 +43,7 @@ impl Default for Config {
             poll_state_interval_ms: 100,
             poll_track_interval_ms: 10,
             tray_enable: true,
+            debug_console: false,
             caret_enable: true,
             caret_color_cn: parse_color("#FF0000A0"),
             caret_color_en: parse_color("#0000FFA0"),
@@ -125,11 +127,18 @@ fn load_config() -> Config {
         if let Some(v) = get("poll",  "state_interval_ms") { if let Ok(n) = v.parse() { config.poll_state_interval_ms = n; } }
         if let Some(v) = get("poll",  "track_interval_ms") { if let Ok(n) = v.parse() { config.poll_track_interval_ms = n; } }
         
-        if let Some(v) = get("tray", "enable") { 
+        if let Some(v) = get("tray", "enable") {
             match v.as_str() {
                 "true" => config.tray_enable = true,
                 "false" => config.tray_enable = false,
                 _ => {} // 保持默认值
+            }
+        }
+        if let Some(v) = get("tray", "debug_console") {
+            match v.as_str() {
+                "true" => config.debug_console = true,
+                "false" => config.debug_console = false,
+                _ => {}
             }
         }
         
@@ -194,6 +203,7 @@ track_interval_ms = 10    # 位置追踪间隔 (ms)
 
 [tray]
 enable = true               # 是否显示托盘图标 (false 时完全后台运行，只能通过任务管理器结束)
+debug_console = false       # 是否显示调试控制台 (用于开发调试)
 
 [caret]
 # 颜色格式：#RRGGBBAA
@@ -230,6 +240,7 @@ pub fn get() -> &'static Config { CONFIG.get_or_init(load_config) }
 pub fn state_poll_interval_ms() -> u64 { get().poll_state_interval_ms }
 pub fn track_poll_interval_ms() -> u64 { get().poll_track_interval_ms }
 pub fn tray_enable() -> bool { get().tray_enable }
+pub fn debug_console() -> bool { get().debug_console }
 pub fn caret_enable() -> bool { get().caret_enable }
 pub fn caret_color_cn() -> u32 { get().caret_color_cn }
 pub fn caret_color_en() -> u32 { get().caret_color_en }
