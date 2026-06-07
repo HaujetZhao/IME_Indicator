@@ -3,6 +3,7 @@
 mod caret_detector;
 mod config;
 mod cursor_detector;
+mod fullscreen_detector;
 mod ime_detector;
 mod overlay;
 mod tray;
@@ -16,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, LoadIconW, IDI_APPLI
 
 use caret_detector::CaretDetector;
 use cursor_detector::CursorDetector;
+use fullscreen_detector::is_fullscreen_app;
 use ime_detector::{is_caps_lock_on, is_chinese_mode};
 use overlay::IndicatorOverlay;
 use tray::TrayManager;
@@ -134,6 +136,7 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
     let mut caps_lock_on = false;
     let mut caret_active = false;
     let mut mouse_active = false;
+    let mut is_fullscreen = false;
 
     // 主线程负责消息循环，子线程负责检测
     while running.load(Ordering::SeqCst) {
@@ -141,21 +144,33 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
 
         // A. 状态检测 (100ms)
         if now.duration_since(last_state_check_time) >= state_interval {
+            // 检测全屏状态
+            is_fullscreen = is_fullscreen_app();
+
             chinese_mode = is_chinese_mode();
             caps_lock_on = is_caps_lock_on();
 
             // Caret 状态判断
             if config::caret_enable() {
                 if let Some(ref overlay) = caret_overlay {
-                    let caret_pos = caret_detector.get_caret_pos();
-                    
-                    let should_caret = caret_pos.is_some() && (chinese_mode || config::caret_show_en());
-                    if should_caret != caret_active {
-                        caret_active = should_caret;
+                    // 全屏时强制隐藏
+                    if is_fullscreen {
                         if caret_active {
-                            overlay.show();
-                        } else {
+                            caret_active = false;
                             overlay.hide();
+                        }
+                    } else {
+                        // 非全屏时正常检测
+                        let caret_pos = caret_detector.get_caret_pos();
+
+                        let should_caret = caret_pos.is_some() && (chinese_mode || config::caret_show_en());
+                        if should_caret != caret_active {
+                            caret_active = should_caret;
+                            if caret_active {
+                                overlay.show();
+                            } else {
+                                overlay.hide();
+                            }
                         }
                     }
                 }
@@ -164,14 +179,23 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
             // Mouse 状态判断
             if config::mouse_enable() {
                 if let Some(ref overlay) = mouse_overlay {
-                    let target_cursor = cursor_detector.is_target_cursor();
-                    let should_mouse = target_cursor && (chinese_mode || config::mouse_show_en());
-                    if should_mouse != mouse_active {
-                        mouse_active = should_mouse;
+                    // 全屏时强制隐藏
+                    if is_fullscreen {
                         if mouse_active {
-                            overlay.show();
-                        } else {
+                            mouse_active = false;
                             overlay.hide();
+                        }
+                    } else {
+                        // 非全屏时正常检测
+                        let target_cursor = cursor_detector.is_target_cursor();
+                        let should_mouse = target_cursor && (chinese_mode || config::mouse_show_en());
+                        if should_mouse != mouse_active {
+                            mouse_active = should_mouse;
+                            if mouse_active {
+                                overlay.show();
+                            } else {
+                                overlay.hide();
+                            }
                         }
                     }
                 }
@@ -181,23 +205,25 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
         }
 
         // B. 坐标追踪
-
-        // 1. 追踪文本光标
-        if config::caret_enable() && caret_active {
-            if let Some(ref overlay) = caret_overlay {
-                if let Some((x, y, h)) = caret_detector.get_caret_pos() {
-                    overlay.update(x, y, chinese_mode, caps_lock_on, h);
+        // 全屏时不追踪位置
+        if !is_fullscreen {
+            // 1. 追踪文本光标
+            if config::caret_enable() && caret_active {
+                if let Some(ref overlay) = caret_overlay {
+                    if let Some((x, y, h)) = caret_detector.get_caret_pos() {
+                        overlay.update(x, y, chinese_mode, caps_lock_on, h);
+                    }
                 }
             }
-        }
 
-        // 2. 追踪鼠标
-        if config::mouse_enable() && mouse_active {
-            if let Some(ref overlay) = mouse_overlay {
-                let mut pt = POINT::default();
-                unsafe {
-                    if GetCursorPos(&mut pt).is_ok() {
-                        overlay.update(pt.x, pt.y, chinese_mode, caps_lock_on, 0);
+            // 2. 追踪鼠标
+            if config::mouse_enable() && mouse_active {
+                if let Some(ref overlay) = mouse_overlay {
+                    let mut pt = POINT::default();
+                    unsafe {
+                        if GetCursorPos(&mut pt).is_ok() {
+                            overlay.update(pt.x, pt.y, chinese_mode, caps_lock_on, 0);
+                        }
                     }
                 }
             }
