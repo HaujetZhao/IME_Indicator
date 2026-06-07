@@ -15,10 +15,12 @@ pub struct Config {
     pub poll_track_interval_ms: u64,
 
     pub tray_enable: bool,
+    pub debug_console: bool,
 
     pub caret_enable: bool,
     pub caret_color_cn: u32,
     pub caret_color_en: u32,
+    pub caret_color_en_upper: u32,
     pub caret_size: i32,
     pub caret_offset_x: i32,
     pub caret_offset_y: i32,
@@ -27,6 +29,7 @@ pub struct Config {
     pub mouse_enable: bool,
     pub mouse_color_cn: u32,
     pub mouse_color_en: u32,
+    pub mouse_color_en_upper: u32,
     pub mouse_size: i32,
     pub mouse_offset_x: i32,
     pub mouse_offset_y: i32,
@@ -40,16 +43,19 @@ impl Default for Config {
             poll_state_interval_ms: 100,
             poll_track_interval_ms: 10,
             tray_enable: true,
+            debug_console: false,
             caret_enable: true,
-            caret_color_cn: parse_color("#FF7800A0"),
-            caret_color_en: parse_color("#0078FF30"),
+            caret_color_cn: parse_color("#FF0000A0"),
+            caret_color_en: parse_color("#0000FFA0"),
+            caret_color_en_upper: parse_color("#008000A0"),
             caret_size: 8,
             caret_offset_x: 0,
             caret_offset_y: 0,
             caret_show_en: true,
             mouse_enable: true,
-            mouse_color_cn: parse_color("#FF7800A0"),
-            mouse_color_en: parse_color("#0078FF30"),
+            mouse_color_cn: parse_color("#FF0000A0"),
+            mouse_color_en: parse_color("#0000FFA0"),
+            mouse_color_en_upper: parse_color("#008000A0"),
             mouse_size: 8,
             mouse_offset_x: 2,
             mouse_offset_y: 18,
@@ -121,11 +127,18 @@ fn load_config() -> Config {
         if let Some(v) = get("poll",  "state_interval_ms") { if let Ok(n) = v.parse() { config.poll_state_interval_ms = n; } }
         if let Some(v) = get("poll",  "track_interval_ms") { if let Ok(n) = v.parse() { config.poll_track_interval_ms = n; } }
         
-        if let Some(v) = get("tray", "enable") { 
+        if let Some(v) = get("tray", "enable") {
             match v.as_str() {
                 "true" => config.tray_enable = true,
                 "false" => config.tray_enable = false,
                 _ => {} // 保持默认值
+            }
+        }
+        if let Some(v) = get("tray", "debug_console") {
+            match v.as_str() {
+                "true" => config.debug_console = true,
+                "false" => config.debug_console = false,
+                _ => {}
             }
         }
         
@@ -138,6 +151,7 @@ fn load_config() -> Config {
         }
         if let Some(v) = get("caret", "color_cn") { config.caret_color_cn = v.parse_color(); }
         if let Some(v) = get("caret", "color_en") { config.caret_color_en = v.parse_color(); }
+        if let Some(v) = get("caret", "color_en_upper") { config.caret_color_en_upper = v.parse_color(); }
         if let Some(v) = get("caret", "size")     { if let Ok(n) = v.parse() { config.caret_size = n; } }
         if let Some(v) = get("caret", "offset_x") { if let Ok(n) = v.parse() { config.caret_offset_x = n; } }
         if let Some(v) = get("caret", "offset_y") { if let Ok(n) = v.parse() { config.caret_offset_y = n; } }
@@ -158,6 +172,7 @@ fn load_config() -> Config {
         }
         if let Some(v) = get("mouse", "color_cn") { config.mouse_color_cn = v.parse_color(); }
         if let Some(v) = get("mouse", "color_en") { config.mouse_color_en = v.parse_color(); }
+        if let Some(v) = get("mouse", "color_en_upper") { config.mouse_color_en_upper = v.parse_color(); }
         if let Some(v) = get("mouse", "size")     { if let Ok(n) = v.parse() { config.mouse_size = n; } }
         if let Some(v) = get("mouse", "offset_x") { if let Ok(n) = v.parse() { config.mouse_offset_x = n; } }
         if let Some(v) = get("mouse", "offset_y") { if let Ok(n) = v.parse() { config.mouse_offset_y = n; } }
@@ -188,11 +203,15 @@ track_interval_ms = 10    # 位置追踪间隔 (ms)
 
 [tray]
 enable = true               # 是否显示托盘图标 (false 时完全后台运行，只能通过任务管理器结束)
+debug_console = false       # 是否显示调试控制台 (用于开发调试)
 
 [caret]
+# 颜色格式：#RRGGBBAA
+# RR=红, GG=绿, BB=蓝, AA=透明度(00=透明, FF=不透明, A0=63%不透明)
 enable = true               # 是否启用文本光标提示
-color_cn = "#FF7800A0"    # 中文状态颜色 (#RRGGBBAA)
-color_en = "#0078FF30"    # 英文状态颜色
+color_cn = "#FF0000A0"    # 中文状态颜色（红）
+color_en = "#0000FFA0"    # 英文小写状态颜色（蓝）
+color_en_upper = "#008000A0"  # 英文大写状态颜色（绿）
 size = 8                    # 提示球大小
 offset_x = 0
 offset_y = 0
@@ -200,8 +219,9 @@ show_en = true              # 英文状态下是否显示
 
 [mouse]
 enable = true               # 是否开启鼠标提示
-color_cn = "#FF7800A0"    # 中文状态颜色
-color_en = "#0078FF30"    # 英文状态颜色
+color_cn = "#FF0000A0"    # 中文状态颜色（红）
+color_en = "#0000FFA0"    # 英文小写状态颜色（蓝）
+color_en_upper = "#008000A0"  # 英文大写状态颜色（绿）
 size = 8                    # 提示球大小
 offset_x = 2
 offset_y = 18
@@ -220,9 +240,11 @@ pub fn get() -> &'static Config { CONFIG.get_or_init(load_config) }
 pub fn state_poll_interval_ms() -> u64 { get().poll_state_interval_ms }
 pub fn track_poll_interval_ms() -> u64 { get().poll_track_interval_ms }
 pub fn tray_enable() -> bool { get().tray_enable }
+pub fn debug_console() -> bool { get().debug_console }
 pub fn caret_enable() -> bool { get().caret_enable }
 pub fn caret_color_cn() -> u32 { get().caret_color_cn }
 pub fn caret_color_en() -> u32 { get().caret_color_en }
+pub fn caret_color_en_upper() -> u32 { get().caret_color_en_upper }
 pub fn caret_size() -> i32 { get().caret_size }
 pub fn caret_offset_x() -> i32 { get().caret_offset_x }
 pub fn caret_offset_y() -> i32 { get().caret_offset_y }
@@ -230,6 +252,7 @@ pub fn caret_show_en() -> bool { get().caret_show_en }
 pub fn mouse_enable() -> bool { get().mouse_enable }
 pub fn mouse_color_cn() -> u32 { get().mouse_color_cn }
 pub fn mouse_color_en() -> u32 { get().mouse_color_en }
+pub fn mouse_color_en_upper() -> u32 { get().mouse_color_en_upper }
 pub fn mouse_size() -> i32 { get().mouse_size }
 pub fn mouse_offset_x() -> i32 { get().mouse_offset_x }
 pub fn mouse_offset_y() -> i32 { get().mouse_offset_y }

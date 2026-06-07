@@ -39,6 +39,7 @@ pub struct IndicatorOverlay {
     size: i32,
     color_cn: u32,
     color_en: u32,
+    color_en_upper: u32,
     offset_x: i32,
     offset_y: i32,
     gdi_token: usize,
@@ -51,6 +52,7 @@ impl IndicatorOverlay {
         size: i32,
         color_cn: u32,
         color_en: u32,
+        color_en_upper: u32,
         offset_x: i32,
         offset_y: i32,
     ) -> Self {
@@ -62,6 +64,7 @@ impl IndicatorOverlay {
             size,
             color_cn,
             color_en,
+            color_en_upper,
             offset_x,
             offset_y,
             gdi_token,
@@ -140,10 +143,17 @@ impl IndicatorOverlay {
     }
 
     /// 更新渲染内容和屏幕位置
-    pub fn update(&self, x: i32, y: i32, is_chinese: bool, caret_h: i32) {
-        let color = if is_chinese {
+    /// is_chinese: 是否中文模式
+    /// is_upper: 是否大写锁定（Caps Lock 开启）
+    pub fn update(&self, x: i32, y: i32, is_chinese: bool, is_upper: bool, caret_h: i32) {
+        let color = if is_upper {
+            // Caps Lock 开启，不管中英文都显示绿色
+            self.color_en_upper
+        } else if is_chinese {
+            // Caps Lock 关闭 + 中文模式 → 红色
             self.color_cn
         } else {
+            // Caps Lock 关闭 + 英文模式 → 蓝色
             self.color_en
         };
 
