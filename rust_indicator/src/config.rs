@@ -23,6 +23,7 @@ pub struct Config {
     pub caret_offset_x: i32,
     pub caret_offset_y: i32,
     pub caret_show_en: bool,
+    pub caret_methods: Vec<String>,
 
     pub mouse_enable: bool,
     pub mouse_color_cn: u32,
@@ -47,6 +48,8 @@ impl Default for Config {
             caret_offset_x: 0,
             caret_offset_y: 0,
             caret_show_en: true,
+            caret_methods: ["gui_info", "uia_caret_range", "uia_selection", "ime", "msaa"]
+                .iter().map(|s| s.to_string()).collect(),
             mouse_enable: true,
             mouse_color_cn: parse_color("#FF7800A0"),
             mouse_color_en: parse_color("#0078FF30"),
@@ -141,12 +144,18 @@ fn load_config() -> Config {
         if let Some(v) = get("caret", "size")     { if let Ok(n) = v.parse() { config.caret_size = n; } }
         if let Some(v) = get("caret", "offset_x") { if let Ok(n) = v.parse() { config.caret_offset_x = n; } }
         if let Some(v) = get("caret", "offset_y") { if let Ok(n) = v.parse() { config.caret_offset_y = n; } }
-        if let Some(v) = get("caret", "show_en") { 
+        if let Some(v) = get("caret", "show_en") {
             match v.as_str() {
                 "true" => config.caret_show_en = true,
                 "false" => config.caret_show_en = false,
                 _ => {}
             }
+        }
+        if let Some(v) = get("caret", "methods") {
+            let list: Vec<String> = v.trim_matches(|c| c == '[' || c == ']')
+                .split(',').map(|s| s.trim().trim_matches('"').to_lowercase())
+                .filter(|s| !s.is_empty()).collect();
+            if !list.is_empty() { config.caret_methods = list; }
         }
 
         if let Some(v) = get("mouse", "enable") { 
@@ -197,6 +206,8 @@ size = 8                    # 提示球大小
 offset_x = 0
 offset_y = 0
 show_en = true              # 英文状态下是否显示
+# 光标检测方法及落级顺序（可删减、可调序；可选: gui_info, uia_caret_range, uia_selection, ime, msaa）
+methods = ["gui_info", "uia_caret_range", "uia_selection", "ime", "msaa"]
 
 [mouse]
 enable = true               # 是否开启鼠标提示
@@ -227,6 +238,7 @@ pub fn caret_size() -> i32 { get().caret_size }
 pub fn caret_offset_x() -> i32 { get().caret_offset_x }
 pub fn caret_offset_y() -> i32 { get().caret_offset_y }
 pub fn caret_show_en() -> bool { get().caret_show_en }
+pub fn caret_methods() -> &'static [String] { &get().caret_methods }
 pub fn mouse_enable() -> bool { get().mouse_enable }
 pub fn mouse_color_cn() -> u32 { get().mouse_color_cn }
 pub fn mouse_color_en() -> u32 { get().mouse_color_en }

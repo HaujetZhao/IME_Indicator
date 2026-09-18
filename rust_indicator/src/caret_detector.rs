@@ -84,7 +84,7 @@ fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)>
 }
 
 /// 检测来源
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
     GuiInfo,
     UiAutomation,
@@ -92,6 +92,31 @@ pub enum DetectionSource {
     Ime,
     MsaaFallback,
     None,
+}
+
+impl DetectionSource {
+    fn name(&self) -> &'static str {
+        match self {
+            DetectionSource::GuiInfo => "GuiInfo",
+            DetectionSource::UiAutomation => "UiAutomation",
+            DetectionSource::UiaCaretRange => "UiaCaretRange",
+            DetectionSource::Ime => "Ime",
+            DetectionSource::MsaaFallback => "MsaaFallback",
+            DetectionSource::None => "None",
+        }
+    }
+
+    /// 从配置名解析（配置里用 snake_case）
+    fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "gui_info" => Some(DetectionSource::GuiInfo),
+            "uia_caret_range" => Some(DetectionSource::UiaCaretRange),
+            "uia_selection" => Some(DetectionSource::UiAutomation),
+            "ime" => Some(DetectionSource::Ime),
+            "msaa" => Some(DetectionSource::MsaaFallback),
+            _ => None,
+        }
+    }
 }
 
 // ============================================================================
@@ -103,6 +128,39 @@ pub struct CaretDetector {
     automation: Option<IUIAutomation>,
     pub last_source: DetectionSource,
     pub last_uia_error: String,
+    /// 上一次写入日志的来源，用于变化检测
+    logged_source: Option<DetectionSource>,
+}
+
+/// 追加一行来源变化日志到 exe 同目录 caret_source.log
+fn log_source_change(source: DetectionSource, pos: Option<CaretPos>, err: &str) {
+    use std::io::Write;
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+
+    let t = unsafe { GetLocalTime() };
+    let pos_str = match pos {
+        Some((x, y, h)) => format!("({x},{y},h{h})"),
+        None => {
+            if err.is_empty() {
+                String::new()
+            } else {
+                format!(" err={err}")
+            }
+        }
+    };
+    let line = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} {} {}\n",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        source.name(), pos_str
+    );
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("caret_source.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 impl CaretDetector {
@@ -117,43 +175,54 @@ impl CaretDetector {
             CoCreateInstance(&CUIAutomation, None, CLSCTX_ALL).ok()
         };
 
-        Self { 
+        // 会话分隔行 + 生效的方法管线，便于区分多次运行与对照测试
+        {
+            use std::io::Write;
+            let path = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("caret_source.log");
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(f, "---- session start ----");
+                let _ = writeln!(f, "methods: {}", crate::config::caret_methods().join(" -> "));
+            }
+        }
+
+        Self {
             automation,
             last_source: DetectionSource::None,
             last_uia_error: String::new(),
+            logged_source: None,
         }
     }
 
-    /// 核心：多级检测光标位置
+    /// 核心：多级检测光标位置，来源变化时写日志
     pub fn get_caret_pos(&mut self) -> Option<CaretPos> {
-        // 第一级：原生 Win32 (支持记事本)
-        if let Some(pos) = self.get_pos_via_gui_info() {
-            self.last_source = DetectionSource::GuiInfo;
-            return Some(pos);
+        let pos = self.detect();
+        if self.logged_source != Some(self.last_source) {
+            log_source_change(self.last_source, pos, &self.last_uia_error);
+            self.logged_source = Some(self.last_source);
         }
+        pos
+    }
 
-        // 第二级：UI Automation TextPattern2 GetCaretRange (支持 VS Code)
-        if let Some(pos) = self.get_pos_via_uia_caret_range() {
-            self.last_source = DetectionSource::UiaCaretRange;
-            return Some(pos);
-        }
-
-        // 第三级：UI Automation TextPattern GetSelection (支持 Chrome)
-        if let Some(pos) = self.get_pos_via_uia_selection() {
-            self.last_source = DetectionSource::UiAutomation;
-            return Some(pos);
-        }
-
-        // 第四级：IME 组合框
-        if let Some(pos) = self.get_pos_via_ime() {
-            self.last_source = DetectionSource::Ime;
-            return Some(pos);
-        }
-
-        // 第五级：MSAA 回退
-        if let Some(pos) = self.get_pos_via_msaa_fallback() {
-            self.last_source = DetectionSource::MsaaFallback;
-            return Some(pos);
+    /// 多级检测：按配置的 methods 顺序依次尝试
+    fn detect(&mut self) -> Option<CaretPos> {
+        for name in crate::config::caret_methods() {
+            let Some(method) = DetectionSource::from_name(name) else { continue };
+            let pos = match method {
+                DetectionSource::GuiInfo => self.get_pos_via_gui_info(),
+                DetectionSource::UiaCaretRange => self.get_pos_via_uia_caret_range(),
+                DetectionSource::UiAutomation => self.get_pos_via_uia_selection(),
+                DetectionSource::Ime => self.get_pos_via_ime(),
+                DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
+                DetectionSource::None => None,
+            };
+            if let Some(pos) = pos {
+                self.last_source = method;
+                return Some(pos);
+            }
         }
 
         self.last_source = DetectionSource::None;
