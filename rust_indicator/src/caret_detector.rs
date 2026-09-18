@@ -79,16 +79,6 @@ fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)>
     }
 }
 
-/// uia_selection 级的可编辑性校验：只接受焦点元素为 Edit（浏览器输入框、VS Code）。
-/// 网页正文等不可输入位置也有文本选区，不校验会误显示。
-/// ControlType 查询失败按拒绝处理（外部数据，失败即不可信）。
-fn is_editable(focused: &IUIAutomationElement) -> bool {
-    use windows::Win32::UI::Accessibility::UIA_EditControlTypeId;
-    unsafe { focused.CurrentControlType() }
-        .map(|t| t == UIA_EditControlTypeId)
-        .unwrap_or(false)
-}
-
 /// 检测来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
@@ -119,8 +109,6 @@ pub struct CaretDetector {
     automation: Option<IUIAutomation>,
     pub last_source: DetectionSource,
     pub last_uia_error: String,
-    /// 本轮检测中 uia 已确认焦点不在可输入位置（只由 uia_selection 级设置）
-    focus_not_editable: bool,
 }
 
 impl CaretDetector {
@@ -139,8 +127,43 @@ impl CaretDetector {
             automation,
             last_source: DetectionSource::None,
             last_uia_error: String::new(),
-            focus_not_editable: false,
         }
+    }
+
+    /// 可见性线：焦点元素是否位于可输入位置。与位置检测并行，互不干扰——
+    /// 位置管线只管"光标在哪"，可见性由这里单独裁决。
+    /// Edit 直接认可；Document（Word/contenteditable）查 ValuePattern.IsReadOnly；
+    /// 其余（网页正文、按钮等）与查询失败一律按不可编辑处理（外部数据，失败即不可信）。
+    pub fn is_focused_editable(&self) -> bool {
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+            UIA_ValuePatternId,
+        };
+        let Some(automation) = self.automation.as_ref() else {
+            return false;
+        };
+        let Ok(focused) = (unsafe { automation.GetFocusedElement() }) else {
+            return false;
+        };
+        let Ok(t) = (unsafe { focused.CurrentControlType() }) else {
+            return false;
+        };
+        if t == UIA_EditControlTypeId {
+            return true;
+        }
+        if t == UIA_DocumentControlTypeId {
+            return matches!(
+                unsafe {
+                    focused
+                        .GetCurrentPattern(UIA_ValuePatternId)
+                        .ok()
+                        .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
+                        .map(|vp| vp.CurrentIsReadOnly())
+                },
+                Some(Ok(ro)) if !ro.as_bool()
+            );
+        }
+        false
     }
 
     /// 核心：按配置管线检测光标位置
@@ -150,7 +173,6 @@ impl CaretDetector {
 
     /// 多级检测：按配置的 methods 顺序依次尝试
     fn detect(&mut self) -> Option<CaretPos> {
-        self.focus_not_editable = false;
         for name in crate::config::caret_methods() {
             let Some(method) = DetectionSource::from_name(name) else { continue };
             let pos = match method {
@@ -159,12 +181,6 @@ impl CaretDetector {
                 DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
                 DetectionSource::None => None,
             };
-            // uia 已确认焦点不可编辑：这是"不在可输入位置"的权威答案，
-            // 直接终止，不降级（低级来源可能返回残留的旧光标位置）
-            if self.focus_not_editable {
-                self.last_source = DetectionSource::None;
-                return None;
-            }
             if let Some(pos) = pos {
                 self.last_source = method;
                 return Some(pos);
@@ -219,13 +235,6 @@ impl CaretDetector {
                     return None;
                 }
             };
-
-            // 可编辑性校验：焦点元素必须位于可输入位置
-            self.focus_not_editable = !is_editable(&focused);
-            if self.focus_not_editable {
-                append_error(&mut self.last_uia_error, "Sel:NotEditable".to_string());
-                return None;
-            }
 
             // 尝试获取 TextPattern
             let pattern_obj = match focused.GetCurrentPattern(UIA_TextPatternId) {

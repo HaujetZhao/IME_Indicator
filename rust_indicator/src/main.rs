@@ -144,8 +144,11 @@ fn run_detector_loop(running: Arc<AtomicBool>) {
             if config::caret_enable() {
                 if let Some(ref overlay) = caret_overlay {
                     let caret_pos = caret_detector.get_caret_pos();
-                    
-                    let should_caret = caret_pos.is_some() && (chinese_mode || config::caret_show_en());
+
+                    // 可见性线：位置有 + 焦点可编辑，两条线都过才显示
+                    let should_caret = caret_pos.is_some()
+                        && caret_detector.is_focused_editable()
+                        && (chinese_mode || config::caret_show_en());
                     if should_caret != caret_active {
                         caret_active = should_caret;
                         if caret_active {

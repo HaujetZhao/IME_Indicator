@@ -1,23 +1,28 @@
-# 光标可编辑性校验设计（2026-09-18）
+# 光标可见性与位置解耦设计（2026-09-18）
 
 ## 问题
 
-1. 浏览器里点击网页正文（非输入框）时，指示器误显示。根因：`uia_selection` 检测级只判断"焦点元素支持 TextPattern 且有选区"就返回光标位置——网页正文的焦点元素是整个 Document，有文本选区但不能输入。
-2. 点走后残留显示：从输入框点到网页正文后，`uia_selection` 已判定不可编辑并返回 None，但管线把 None 当"这级没拿到"继续降级，msaa 级的 GUITHREADINFO 回退用 hwndFocus 上残留的 rcCaret 返回旧光标位置，圆点不消失。
+1. 浏览器点击网页正文（非输入框）时指示器误显示：`uia_selection` 级只判断"焦点元素有文本选区"就返回位置，而网页正文焦点是 Document，有选区但不能输入。
+2. 把可编辑性校验塞进位置管线后，网页编辑框（焦点元素非 Edit 型，如 contenteditable 是 Document 型）被连带拒掉，光标在输入框里也不显示了。
 
-`gui_info`/`msaa` 两级有天然可输入信号（系统光标 hwndCaret 只在真正可输入时存在），自身不校验。
+## 设计：两条并行的线
 
-## 方案
+- **位置线**：原多级检测管线（gui_info → uia_selection → msaa）原样保留，只管"光标在哪"，不做任何可编辑性判断。
+- **可见性线** `is_focused_editable()`：单独裁决"焦点能不能输入"。
+  - `ControlType == Edit` → 可编辑
+  - `ControlType == Document` → 查 `ValuePattern.IsReadOnly`，非只读才可编辑（Word/contenteditable）
+  - 其余（网页正文、按钮等）与查询失败一律不可编辑（外部数据，失败即不可信）
+  - 注：曾试过 Edit-only，实测连网页输入框都会误杀，故保留 Document 分支。
 
-- **校验**：`uia_selection` 拿到焦点元素后，只接受 `ControlType == Edit`（浏览器输入框、VS Code）。查询失败按拒绝处理（外部数据，失败即不可信）。曾实现 Document+IsReadOnly 与 off 等模式（配置 `editable_check`），实测 edit_only 已够用，其余删除。
-- **终止语义**："焦点不可编辑"是"不在可输入位置"的权威答案，终止整条管线，不降级到 `gui_info`/`msaa`（它们可能返回残留的旧光标位置）。焦点确实可编辑但 uia 拿不到矩形时，仍正常降级。
+显示条件 = 位置线有结果 **且** 可见性线可编辑 **且**（中文模式或配置允许英文显示）。
 
 ## 效果预期
 
-- 浏览器网页正文：Document → 拒绝并终止 → 不显示，且离开输入框后立即消失
-- 浏览器输入框（Edit）→ 正常显示
-- 记事本等原生控件（gui_info 级）→ 不受影响
+- 网页正文：可见性线判不可编辑 → 不显示；从输入框点走后 ~100ms 内消失（msaa 残留的旧位置被可见性线拦住）
+- 网页输入框/contenteditable：位置来自 uia_selection，可见性线放行 → 正常显示
+- 记事本等原生控件：位置来自 gui_info，焦点 Edit → 正常显示
+- VS Code / Word / 终端类待实测；若 Document 分支误放行（如某些正文也暴露非只读 ValuePattern），再收紧判据
 
 ## 改动范围
 
-`rust_indicator/src/caret_detector.rs`（校验函数 + 管线终止）、`python_indicator/caret_detector.py`（参考实现同步）。无配置项、无新依赖。
+`rust_indicator/src/caret_detector.rs`（新增 `is_focused_editable`，位置管线还原）、`rust_indicator/src/main.rs`（显示条件接入）、`python_indicator/`（参考实现同步）。无配置项、无新依赖。

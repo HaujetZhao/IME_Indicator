@@ -50,7 +50,10 @@ def main():
                 # Caret 状态判断
                 if config.CARET_ENABLE:
                     caret_pos_data = caret_detector.get_caret_pos() # (x, y, h)
-                    should_caret = caret_pos_data is not None and (chinese_mode or config.CARET_SHOW_EN)
+                    # 可见性线：位置有 + 焦点可编辑，两条线都过才显示
+                    should_caret = (caret_pos_data is not None
+                                    and caret_detector.is_focused_editable()
+                                    and (chinese_mode or config.CARET_SHOW_EN))
                     if should_caret != caret_active:
                         caret_active = should_caret
                         if caret_active: caret_overlay.show()

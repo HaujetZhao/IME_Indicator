@@ -24,8 +24,21 @@ class CaretDetector:
             0xE0, 0x36, 0x87, 0x61, 0x3D, 0x3C, 0xCF, 0x11,
             0x81, 0x0C, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71
         )
-        # 本轮检测中 uia 已确认焦点不在可输入位置
-        self._focus_not_editable = False
+
+    def is_focused_editable(self) -> bool:
+        """可见性线：焦点元素是否位于可输入位置，与位置检测并行互不干扰。
+        Edit 直接认可；Document 查 ValuePattern.IsReadOnly；其余与查询失败一律不可编辑。"""
+        try:
+            focus = auto.GetFocusedControl()
+            if not focus: return False
+            ct = focus.ControlType
+            if ct == auto.ControlType.EditControl: return True
+            if ct == auto.ControlType.DocumentControl:
+                vp = focus.GetValuePattern()
+                return vp is not None and not vp.IsReadOnly
+        except Exception:
+            return False
+        return False
 
     def get_caret_pos(self):
         """核心：多级检测光标位置"""
@@ -36,8 +49,6 @@ class CaretDetector:
 
             # 第二级：UI Automation (支持 VS Code, Chrome)
             pos = self._get_pos_via_uia()
-            # uia 已确认焦点不可编辑：权威答案，不降级（低级来源可能返回残留旧光标）
-            if self._focus_not_editable: return None
             if pos: return pos
 
             # 第三级：MSAA
@@ -58,20 +69,10 @@ class CaretDetector:
                 return pt.x, pt.y, h
         return None
 
-    def _is_editable(self, focus) -> bool:
-        """uia 级可编辑性校验：只接受焦点元素为 Edit（网页正文等有选区但不可输入）"""
-        try:
-            return focus.ControlType == auto.ControlType.EditControl
-        except Exception:
-            return False
-
     def _get_pos_via_uia(self):
         try:
             focus = auto.GetFocusedControl()
             if not focus: return None
-            # 可编辑性校验：焦点元素必须位于可输入位置
-            self._focus_not_editable = not self._is_editable(focus)
-            if self._focus_not_editable: return None
             pattern = focus.GetTextPattern()
             if not pattern: return None
             sel_ranges = pattern.GetSelection()
