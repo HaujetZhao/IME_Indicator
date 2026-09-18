@@ -211,9 +211,6 @@ show_en = true              # 英文状态下是否显示
 # 光标检测方法及落级顺序（可删减、可调序）
 # 可选: gui_info(记事本等原生) uia_selection(浏览器/VS Code) msaa(浏览器 caret 对象)
 methods = ["gui_info", "uia_selection", "msaa"]
-# uia_selection 级可编辑性校验（拒绝网页正文等不可输入位置的误显示）
-# 可选: edit_or_document(Edit 直接接受，Document 查 IsReadOnly) / edit_only(只认 Edit) / off(不校验)
-editable_check = "edit_or_document"
 
 [mouse]
 enable = true               # 是否开启鼠标提示
