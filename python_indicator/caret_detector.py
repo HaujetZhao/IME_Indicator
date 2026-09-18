@@ -41,40 +41,16 @@ class CaretDetector:
     def get_caret_pos(self):
         """核心：多级检测光标位置"""
         try:
-            # 第零级：选区细化（UIA TextPattern，支持浏览器/VS Code 的选区右下角）
-            pos = self._get_pos_via_uia_selection()
-            if pos: return pos
-
             # 第一级：原生 Win32 (支持记事本)
             pos = self._get_pos_via_gui_info()
             if pos: return pos
 
-            # 第二级：MSAA (支持浏览器/VS Code)
+            # 第二级：MSAA OBJID_CARET (支持 VS Code/Edge)
             pos = self._get_pos_via_msaa()
             if pos: return pos
         except Exception:
             pass
         return None
-
-    def _get_pos_via_uia_selection(self):
-        """有真实选区时返回选区右下角 (右缘 x, 顶 y, 高 h)。
-
-        塌缩光标（无选区）按文档返回空数组，Chromium 返回 1px 线矩形——
-        一律返回 None，走常规管线。矩形为屏幕物理像素。"""
-        try:
-            focus = auto.GetFocusedControl()
-            if not focus: return None
-            pattern = focus.GetPattern(auto.PatternId.TextPattern)
-            if not pattern: return None
-            last = None
-            for r in pattern.GetSelection():
-                for rect in r.GetBoundingRectangles():
-                    # w > 1.5px 才算真实选区；多行选区最后一个矩形是末行，右缘即视觉末尾
-                    if rect.width() > 1.5 and rect.height() > 0:
-                        last = (rect.left() + rect.width(), rect.top(), int(rect.height()))
-            return last
-        except Exception:
-            return None
 
     def _get_pos_via_gui_info(self):
         gui_info = GUITHREADINFO()
@@ -88,6 +64,7 @@ class CaretDetector:
         return None
 
     def _get_pos_via_msaa(self):
+        """MSAA OBJID_CARET 光标对象（VS Code/Edge 支持）"""
         hwnd = user32.GetForegroundWindow()
         if not hwnd: return None
         p_acc = ctypes.c_void_p()
@@ -106,14 +83,4 @@ class CaretDetector:
                 release_func = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(vtable_ptr[2])
                 release_func(p_acc)
         except Exception: pass
-        
-        gui_info = GUITHREADINFO()
-        gui_info.cbSize = sizeof(GUITHREADINFO)
-        if user32.GetGUIThreadInfo(0, byref(gui_info)):
-            target_hwnd = gui_info.hwndCaret or gui_info.hwndFocus or gui_info.hwndActive
-            if target_hwnd and (gui_info.rcCaret.left != 0 or gui_info.rcCaret.top != 0):
-                pt = wintypes.POINT(gui_info.rcCaret.left, gui_info.rcCaret.top)
-                user32.ClientToScreen(target_hwnd, byref(pt))
-                if pt.x > -1000 and pt.y > -1000: 
-                    return pt.x, pt.y, (gui_info.rcCaret.bottom - gui_info.rcCaret.top)
         return None

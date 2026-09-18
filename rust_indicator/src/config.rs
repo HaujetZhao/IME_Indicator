@@ -48,9 +48,8 @@ impl Default for Config {
             caret_offset_x: 0,
             caret_offset_y: 0,
             caret_show_en: true,
-            // 实测（2026-09）：uia_selection 在 VS Code 中像素映射错误（光标落到行首），
-            // 已删除；浏览器/VS Code 的光标由 msaa 级覆盖
-            caret_methods: ["gui_info", "msaa"]
+            // 实测（2026-09）：gui_info 覆盖记事本，msaa_caret 覆盖 VS Code/Edge
+            caret_methods: ["gui_info", "msaa_caret"]
                 .iter().map(|s| s.to_string()).collect(),
             mouse_enable: true,
             mouse_color_cn: parse_color("#FF7800A0"),
@@ -209,8 +208,8 @@ offset_x = 0
 offset_y = 0
 show_en = true              # 英文状态下是否显示
 # 光标检测方法及落级顺序（可删减、可调序）
-# 可选: gui_info(记事本等原生) msaa(浏览器/VS Code 的 caret 对象)
-methods = ["gui_info", "msaa"]
+# 可选: gui_info(记事本等原生) msaa_caret(caret 对象, VS Code/Edge)
+methods = ["gui_info", "msaa_caret"]
 
 [mouse]
 enable = true               # 是否开启鼠标提示

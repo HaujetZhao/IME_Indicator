@@ -31,9 +31,8 @@ pub type CaretPos = (i32, i32, i32);
 /// 检测来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
-    UiaSelection,
     GuiInfo,
-    MsaaFallback,
+    MsaaCaret,
     None,
 }
 
@@ -42,7 +41,7 @@ impl DetectionSource {
     fn from_name(s: &str) -> Option<Self> {
         match s {
             "gui_info" => Some(DetectionSource::GuiInfo),
-            "msaa" => Some(DetectionSource::MsaaFallback),
+            "msaa_caret" => Some(DetectionSource::MsaaCaret),
             _ => None,
         }
     }
@@ -111,21 +110,14 @@ impl CaretDetector {
         self.detect()
     }
 
-    /// 多级检测：选区细化优先，其余按配置的 methods 顺序依次尝试
+    /// 多级检测：按配置的 methods 顺序依次尝试
     fn detect(&mut self) -> Option<CaretPos> {
-        // 有选区时锚定选区右缘（UIA TextPattern）；塌缩光标返回 None，走常规管线
-        if let Some(pos) = self.get_pos_via_uia_selection() {
-            self.last_source = DetectionSource::UiaSelection;
-            return Some(pos);
-        }
-
         for name in crate::config::caret_methods() {
             let Some(method) = DetectionSource::from_name(name) else { continue };
             let pos = match method {
                 DetectionSource::GuiInfo => self.get_pos_via_gui_info(),
-                DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
-                // UiaSelection 只作选区细化，不进配置管线
-                DetectionSource::UiaSelection | DetectionSource::None => None,
+                DetectionSource::MsaaCaret => self.get_pos_via_msaa_caret(),
+                DetectionSource::None => None,
             };
             if let Some(pos) = pos {
                 self.last_source = method;
@@ -135,62 +127,6 @@ impl CaretDetector {
 
         self.last_source = DetectionSource::None;
         None
-    }
-
-    /// 通过 UIA TextPattern 检测选区：有真实选区时返回选区右下角 (右缘 x, 顶 y, 高 h)。
-    /// 塌缩光标（无选区）按文档返回空数组，Chromium 则返回 1px 线矩形——一律返回 None，
-    /// 由调用方走常规管线。返回矩形为屏幕物理像素。
-    fn get_pos_via_uia_selection(&mut self) -> Option<CaretPos> {
-        use windows::Win32::System::Ole::{
-            SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
-            SafeArrayUnaccessData,
-        };
-        use windows::Win32::UI::Accessibility::{IUIAutomationTextPattern, UIA_TextPatternId};
-
-        let automation = self.automation.as_ref()?;
-        let focused = unsafe { automation.GetFocusedElement() }.ok()?;
-        let pattern = unsafe { focused.GetCurrentPattern(UIA_TextPatternId) }
-            .ok()
-            .and_then(|p| p.cast::<IUIAutomationTextPattern>().ok())?;
-        let selection = unsafe { pattern.GetSelection() }.ok()?;
-
-        // 跨所有选区段取最后一个有效矩形（w > 1.5px 才算真实选区，单行选区即其右下角，
-        // 多行选区最后一个矩形是末行，右缘即选区视觉末尾）
-        let mut last = None;
-        for i in 0..unsafe { selection.Length() }.ok()? {
-            let elem = unsafe { selection.GetElement(i) };
-            let Ok(range) = elem else { continue };
-            let rects_result = unsafe { range.GetBoundingRectangles() };
-            let Ok(psa) = rects_result else { continue };
-            if psa.is_null() {
-                continue;
-            }
-            // 解包 VT_R8 扁平数组，每矩形 4 个 double: left, top, width, height
-            let rects: Option<Vec<(f64, f64, f64, f64)>> = (|| {
-                let lower = unsafe { SafeArrayGetLBound(psa, 1) }.ok()?;
-                let upper = unsafe { SafeArrayGetUBound(psa, 1) }.ok()?;
-                let n = (upper - lower + 1) as usize;
-                if n < 4 {
-                    return None;
-                }
-                let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
-                unsafe { SafeArrayAccessData(psa, &mut data) }.ok()?;
-                let doubles = unsafe { std::slice::from_raw_parts(data as *const f64, n) };
-                let out: Vec<_> = doubles.chunks_exact(4).map(|c| (c[0], c[1], c[2], c[3])).collect();
-                unsafe { SafeArrayUnaccessData(psa) }.ok()?;
-                Some(out)
-            })();
-            let _ = unsafe { SafeArrayDestroy(psa) };
-
-            if let Some(rects) = rects {
-                for (l, t, w, h) in rects {
-                    if w > 1.5 && h > 0.0 {
-                        last = Some((l + w, t, h as i32));
-                    }
-                }
-            }
-        }
-        last.map(|(x, y, h)| (x as i32, y as i32, h))
     }
 
     /// 通过 GetGUIThreadInfo 获取光标位置
@@ -216,12 +152,12 @@ impl CaretDetector {
         None
     }
 
-    /// 通过 IME 组合窗口获取光标位置
-    fn get_pos_via_msaa_fallback(&mut self) -> Option<CaretPos> {
+    /// 通过 MSAA OBJID_CARET 获取光标位置（VS Code 支持，浏览器不提供此对象）
+    fn get_pos_via_msaa_caret(&mut self) -> Option<CaretPos> {
         use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
         use windows::core::GUID;
         use windows::core::VARIANT;
-        
+
         // 追加错误信息
         let append_error = |s: &mut String, new: &str| {
             if !s.is_empty() {
@@ -229,7 +165,7 @@ impl CaretDetector {
             }
             s.push_str(new);
         };
-        
+
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.0.is_null() {
@@ -239,7 +175,7 @@ impl CaretDetector {
 
             // 使用模块级常量 IID_IACCESSIBLE
             let iid_iaccessible = GUID::from_u128(IID_IACCESSIBLE);
-            
+
             // 尝试获取 OBJID_CARET 的 IAccessible 接口
             let mut p_acc: Option<IAccessible> = None;
             let result = AccessibleObjectFromWindow(
@@ -248,70 +184,42 @@ impl CaretDetector {
                 &iid_iaccessible,
                 &mut p_acc as *mut _ as *mut *mut std::ffi::c_void,
             );
-            
+
             if result.is_err() {
                 append_error(&mut self.last_uia_error, &format!("MSAA:Err:{:X}", result.unwrap_err().code().0 as u32));
-                // 继续尝试 GUITHREADINFO 回退
+                return None;
             } else if p_acc.is_none() {
                 append_error(&mut self.last_uia_error, "MSAA:NoAcc");
-                // 继续尝试 GUITHREADINFO 回退
-            } else if let Some(acc) = p_acc {
-                // 调用 accLocation 获取位置
-                let mut x: i32 = 0;
-                let mut y: i32 = 0;
-                let mut w: i32 = 0;
-                let mut h: i32 = 0;
-                
-                // CHILDID_SELF = VARIANT with VT_I4 value 0
-                // 使用 from(0i32) 创建 VT_I4 类型的 VARIANT
-                let var_child = VARIANT::from(0i32);
-                
-                match acc.accLocation(&mut x, &mut y, &mut w, &mut h, &var_child) {
-                    Ok(_) => {
-                        if x != 0 || y != 0 {
-                            // 有选区时 caret 对象矩形覆盖整个选区（光标在选区末尾），取右缘
-                            return Some((x + w, y, h));
-                        } else {
-                            append_error(&mut self.last_uia_error, "MSAA:Zero");
-                        }
-                    }
-                    Err(e) => {
-                        append_error(&mut self.last_uia_error, &format!("MSAA:Loc:{:X}", e.code().0 as u32));
-                    }
-                }
+                return None;
             }
 
-            // 回退到 GUITHREADINFO
-            let mut gui_info = GUITHREADINFO {
-                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-                ..Default::default()
-            };
+            let acc = p_acc.unwrap();
+            // 调用 accLocation 获取位置
+            let mut x: i32 = 0;
+            let mut y: i32 = 0;
+            let mut w: i32 = 0;
+            let mut h: i32 = 0;
 
-            if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
-                let target_hwnd = if !gui_info.hwndCaret.0.is_null() {
-                    gui_info.hwndCaret
-                } else if !gui_info.hwndFocus.0.is_null() {
-                    gui_info.hwndFocus
-                } else if !gui_info.hwndActive.0.is_null() {
-                    gui_info.hwndActive
-                } else {
-                    return None;
-                };
+            // CHILDID_SELF = VARIANT with VT_I4 value 0
+            // 使用 from(0i32) 创建 VT_I4 类型的 VARIANT
+            let var_child = VARIANT::from(0i32);
 
-                if gui_info.rcCaret.left != 0 || gui_info.rcCaret.top != 0 {
-                    let mut pt = POINT {
-                        x: gui_info.rcCaret.left,
-                        y: gui_info.rcCaret.top,
-                    };
-                    let _ = ClientToScreen(target_hwnd, &mut pt);
-                    if pt.x > -1000 && pt.y > -1000 {
-                        let h = gui_info.rcCaret.bottom - gui_info.rcCaret.top;
-                        return Some((pt.x, pt.y, h));
+            match acc.accLocation(&mut x, &mut y, &mut w, &mut h, &var_child) {
+                Ok(_) => {
+                    if x != 0 || y != 0 {
+                        // 有选区时 caret 对象矩形覆盖整个选区（光标在选区末尾），取右缘
+                        return Some((x + w, y, h));
+                    } else {
+                        append_error(&mut self.last_uia_error, "MSAA:Zero");
+                        None
                     }
+                }
+                Err(e) => {
+                    append_error(&mut self.last_uia_error, &format!("MSAA:Loc:{:X}", e.code().0 as u32));
+                    None
                 }
             }
         }
-        None
     }
 }
 
