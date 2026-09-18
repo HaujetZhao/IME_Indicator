@@ -72,6 +72,13 @@ class CaretDetector:
             rects = range0.GetBoundingRectangles()
             if rects and len(rects) > 0:
                 r = rects[0]
+                # Chromium 把空输入框表示为单个 U+FFFC 对象字符，此时选区矩形=整个元素矩形
+                # 而非光标位置，拒收（有字符时是零宽竖线矩形）
+                er = focus.BoundingRectangle
+                tol = 2
+                if (abs(r.left - er.left) <= tol and abs(r.top - er.top) <= tol
+                        and abs(r.right - er.right) <= tol and abs(r.bottom - er.bottom) <= tol):
+                    return None
                 return int(r.left), int(r.top), int(r.bottom - r.top)
         except Exception: pass
         return None

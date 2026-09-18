@@ -8,8 +8,8 @@ use windows::Win32::System::Ole::{
     SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayUnaccessData,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationTextPattern2,
-    UIA_TextPattern2Id, UIA_TextPatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
+    IUIAutomationTextPattern2, UIA_TextPattern2Id, UIA_TextPatternId,
 };
 use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, ImmGetCompositionWindow, ImmGetContext, ImmReleaseContext,
@@ -35,6 +35,22 @@ const IID_IACCESSIBLE: u128 = 0x618736e0_3c3d_11cf_810c_00aa00389b71;
 
 /// 光标位置信息 (x, y, height)
 pub type CaretPos = (i32, i32, i32);
+
+/// Chromium 把空输入框表示为单个 U+FFFC 对象替换字符，此时选区/插入单元的
+/// 边界矩形等于整个元素矩形，不是光标位置（实测：空字段时二者完全相等，
+/// 有字符时为零宽竖线）。拒收这种假矩形，让检测落到下一级。
+fn rect_covers_element(focused: &IUIAutomationElement, l: f64, t: f64, w: f64, h: f64) -> bool {
+    const TOL: f64 = 2.0;
+    match unsafe { focused.CurrentBoundingRectangle() } {
+        Ok(r) => {
+            (l - r.left as f64).abs() <= TOL
+                && (t - r.top as f64).abs() <= TOL
+                && (l + w - r.right as f64).abs() <= TOL
+                && (t + h - r.bottom as f64).abs() <= TOL
+        }
+        Err(_) => false,
+    }
+}
 
 /// 检测来源
 #[derive(Debug, Clone, Copy)]
@@ -216,11 +232,12 @@ impl CaretDetector {
                                 let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                                 if SafeArrayAccessData(&*rects2, &mut data_ptr).is_ok() {
                                     let doubles = std::slice::from_raw_parts(data_ptr as *const f64, elem_count2);
-                                    let left = doubles[0] as i32;
-                                    let top = doubles[1] as i32;
-                                    let height = doubles[3] as i32;
                                     let _ = SafeArrayUnaccessData(&*rects2);
-                                    return Some((left, top, height));
+                                    if rect_covers_element(&focused, doubles[0], doubles[1], doubles[2], doubles[3]) {
+                                        self.last_uia_error = "Car:EmptyField".to_string();
+                                        return None;
+                                    }
+                                    return Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32));
                                 }
                             }
                         }
@@ -344,13 +361,16 @@ impl CaretDetector {
             }
 
             let doubles = std::slice::from_raw_parts(data_ptr as *const f64, elem_count);
-            let left = doubles[0] as i32;
-            let top = doubles[1] as i32;
-            let height = doubles[3] as i32;
+            let result = if rect_covers_element(&focused, doubles[0], doubles[1], doubles[2], doubles[3]) {
+                append_error(&mut self.last_uia_error, "Sel:EmptyField".to_string());
+                None
+            } else {
+                Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32))
+            };
 
             let _ = SafeArrayUnaccessData(&*rects);
 
-            return Some((left, top, height));
+            result
         }
     }
 
