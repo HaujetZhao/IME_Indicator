@@ -1,7 +1,7 @@
 //! 文本光标位置检测模块 - 多级检测策略
 
 
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::CUIAutomation;
@@ -144,8 +144,13 @@ impl CaretDetector {
                         y: gui_info.rcCaret.top,
                     };
                     let _ = ClientToScreen(gui_info.hwndCaret, &mut pt);
-                    let h = gui_info.rcCaret.bottom - gui_info.rcCaret.top;
-                    return Some((pt.x, pt.y, h));
+                    // rcCaret 的高度是插入符位图高:有的程序(微信、Tk)只建 1x1 的
+                    // 标记插入符,rcCaret.top 只是插入点顶部。行高取位图高与焦点
+                    // 窗口字体行高中较大者(IME 候选框定位用的也是字体行高),
+                    // Notepad++ 等报真实行高的不受影响。
+                    let caret_h = gui_info.rcCaret.bottom - gui_info.rcCaret.top;
+                    let font_h = font_height(gui_info.hwndFocus).unwrap_or(caret_h);
+                    return Some((pt.x, pt.y, caret_h.max(font_h)));
                 }
             }
         }
@@ -226,5 +231,42 @@ impl CaretDetector {
 impl Default for CaretDetector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 窗口字体的行高(tmHeight)。窗口未设置字体(自绘框架)时用系统 UI 字体
+/// (NONCLIENTMETRICS.lfMessageFont,即 tkinter 默认字体对应的 Segoe UI)。
+fn font_height(hwnd: HWND) -> Option<i32> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateFontIndirectW, GetDC, GetTextMetricsW, ReleaseDC, SelectObject, HFONT, TEXTMETRICW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SendMessageW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SystemParametersInfoW, WM_GETFONT,
+    };
+
+    unsafe {
+        let font = SendMessageW(hwnd, WM_GETFONT, None, None);
+        let hfont: HFONT = if font.0 != 0 {
+            HFONT(font.0 as *mut _)
+        } else {
+            let mut ncm = NONCLIENTMETRICSW::default();
+            ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+            SystemParametersInfoW(
+                SPI_GETNONCLIENTMETRICS,
+                ncm.cbSize,
+                Some(&mut ncm as *mut _ as *mut _),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .ok()?;
+            HFONT(CreateFontIndirectW(&ncm.lfMessageFont).0)
+        };
+        let hdc = GetDC(hwnd);
+        let old = SelectObject(hdc, hfont);
+        let mut tm = TEXTMETRICW::default();
+        let ok = GetTextMetricsW(hdc, &mut tm).as_bool();
+        SelectObject(hdc, old);
+        ReleaseDC(hwnd, hdc);
+        ok.then_some(tm.tmHeight)
     }
 }

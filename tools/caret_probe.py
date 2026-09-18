@@ -13,6 +13,79 @@ user32 = ctypes.windll.user32
 oleacc = ctypes.windll.oleacc
 ole32 = ctypes.windll.ole32
 kernel32 = ctypes.windll.kernel32
+gdi32 = ctypes.windll.gdi32
+imm32 = ctypes.windll.imm32
+
+
+class LOGFONTW(ctypes.Structure):
+    _fields_ = [("lfHeight", wintypes.LONG), ("lfWidth", wintypes.LONG),
+                ("lfEscapement", wintypes.LONG), ("lfOrientation", wintypes.LONG),
+                ("lfWeight", wintypes.LONG), ("lfItalic", wintypes.BYTE),
+                ("lfUnderline", wintypes.BYTE), ("lfStrikeOut", wintypes.BYTE),
+                ("lfCharSet", wintypes.BYTE), ("lfOutPrecision", wintypes.BYTE),
+                ("lfClipPrecision", wintypes.BYTE), ("lfQuality", wintypes.BYTE),
+                ("lfPitchAndFamily", wintypes.BYTE), ("lfFaceName", wintypes.WCHAR * 32)]
+
+
+class TEXTMETRICW(ctypes.Structure):
+    _fields_ = [("tmHeight", wintypes.LONG), ("tmAscent", wintypes.LONG),
+                ("tmDescent", wintypes.LONG), ("tmInternalLeading", wintypes.LONG),
+                ("tmExternalLeading", wintypes.LONG), ("tmAveCharWidth", wintypes.LONG),
+                ("tmMaxCharWidth", wintypes.LONG), ("tmWeight", wintypes.LONG),
+                ("tmOverhang", wintypes.LONG), ("tmDigitizedAspectX", wintypes.LONG),
+                ("tmDigitizedAspectY", wintypes.LONG), ("tmFirstChar", wintypes.WCHAR),
+                ("tmLastChar", wintypes.WCHAR), ("tmDefaultChar", wintypes.WCHAR),
+                ("tmBreakChar", wintypes.WCHAR), ("tmItalic", wintypes.BYTE),
+                ("tmUnderlined", wintypes.BYTE), ("tmStruckOut", wintypes.BYTE),
+                ("tmPitchAndFamily", wintypes.BYTE), ("tmCharSet", wintypes.BYTE)]
+
+
+class NONCLIENTMETRICSW(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("iBorderWidth", ctypes.c_int),
+                ("iScrollWidth", ctypes.c_int), ("iScrollHeight", ctypes.c_int),
+                ("iCaptionWidth", ctypes.c_int), ("iCaptionHeight", ctypes.c_int),
+                ("lfCaptionFont", LOGFONTW), ("iSmCaptionWidth", ctypes.c_int),
+                ("iSmCaptionHeight", ctypes.c_int), ("lfSmCaptionFont", LOGFONTW),
+                ("iMenuWidth", ctypes.c_int), ("iMenuHeight", ctypes.c_int),
+                ("lfMenuFont", LOGFONTW), ("lfStatusFont", LOGFONTW),
+                ("lfMessageFont", LOGFONTW),
+                ("iPaddedBorderWidth", ctypes.c_int)]
+
+
+def tm_height(hfont):
+    """给定 HFONT,返回选入 DC 后的 tmHeight"""
+    hdc = user32.GetDC(None)
+    old = gdi32.SelectObject(hdc, hfont)
+    tm = TEXTMETRICW()
+    ok = gdi32.GetTextMetricsW(hdc, ctypes.byref(tm))
+    gdi32.SelectObject(hdc, old)
+    user32.ReleaseDC(None, hdc)
+    return tm.tmHeight if ok else None
+
+
+def heights_of(hwnd):
+    """各来源的字体行高"""
+    out = {}
+    # 1) WM_GETFONT
+    hf = user32.SendMessageW(hwnd, 0x0031, 0, 0)  # WM_GETFONT
+    out["wm_getfont"] = tm_height(hf) if hf else None
+    # 2) DEFAULT_GUI_FONT
+    out["default_gui"] = tm_height(gdi32.GetStockObject(17))  # DEFAULT_GUI_FONT
+    # 3) NONCLIENTMETRICS.lfMessageFont
+    ncm = NONCLIENTMETRICSW()
+    ncm.cbSize = ctypes.sizeof(ncm)
+    if user32.SystemParametersInfoW(0x0029, ncm.cbSize, ctypes.byref(ncm), 0):  # SPI_GETNONCLIENTMETRICS
+        hfont = gdi32.CreateFontIndirectW(ctypes.byref(ncm.lfMessageFont))
+        out["message_font"] = tm_height(hfont)
+        gdi32.DeleteObject(hfont)
+    # 4) IME 合成字体(候选框定位用的就是它)
+    himc = imm32.ImmGetContext(hwnd)
+    if himc:
+        lf = LOGFONTW()
+        if imm32.ImmGetCompositionFontW(himc, ctypes.byref(lf)):
+            out["ime_font"] = f"lfHeight={lf.lfHeight}"
+        imm32.ImmReleaseContext(hwnd, himc)
+    return out
 
 OBJID_CARET = 0xFFFFFFF8
 # IID_IAccessible {618736e0-3c3d-11cf-810c-00aa00389b71}
@@ -51,6 +124,20 @@ AccLocation = ctypes.WINFUNCTYPE(
 var_child = VARIANT(vt=3)  # VT_I4, CHILDID_SELF
 
 
+def class_name(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def hwnd_info(hwnd):
+    """类名、窗口矩形(屏幕坐标)、父窗口类名"""
+    rect = RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    parent = user32.GetParent(hwnd)
+    return class_name(hwnd), rect, class_name(parent) if parent else "-"
+
+
 def read_gui_info():
     gi = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
     if not user32.GetGUIThreadInfo(0, ctypes.byref(gi)):
@@ -58,7 +145,18 @@ def read_gui_info():
     if not gi.hwndCaret:
         return "无 hwndCaret"
     r = gi.rcCaret
-    return f"gui_info: hwnd=0x{gi.hwndCaret:X} rect=({r.left},{r.top},{r.right-r.left}x{r.bottom-r.top})"
+    pt = wintypes.POINT(r.left, r.top)
+    user32.ClientToScreen(gi.hwndCaret, ctypes.byref(pt))
+    cls, wrect, parent_cls = hwnd_info(gi.hwndCaret)
+    focus_buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(gi.hwndFocus, focus_buf, 256)
+    heights = heights_of(gi.hwndFocus) if gi.hwndFocus else {}
+    hs = " ".join(f"{k}={v}" for k, v in heights.items())
+    return (
+        f"gui_info: hwnd=0x{gi.hwndCaret:X}({cls}) rect=({r.left},{r.top},{r.right-r.left}x{r.bottom-r.top}) "
+        f"→ 屏幕=({pt.x},{pt.y}) "
+        f"焦点={focus_buf.value} 行高[{hs}]"
+    )
 
 
 def read_msaa():
