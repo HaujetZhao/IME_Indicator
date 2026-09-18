@@ -69,6 +69,10 @@ class CaretDetector:
             sel_ranges = pattern.GetSelection()
             if not sel_ranges or len(sel_ranges) == 0: return None
             range0 = sel_ranges[0]
+            # 非零宽选区（如 Ctrl+L 全选地址栏）的矩形是选中内容整体矩形而非光标，
+            # 折叠到选区起点再取竖线（uiautomation 无 Collapse，用 MoveEndpointByRange）
+            if range0.GetText(1):
+                range0.MoveEndpointByRange(1, range0.textRange, 0)
             rects = range0.GetBoundingRectangles()
             if rects and len(rects) > 0:
                 r = rects[0]
@@ -79,6 +83,21 @@ class CaretDetector:
                 if (abs(r.left - er.left) <= tol and abs(r.top - er.top) <= tol
                         and abs(r.right - er.right) <= tol and abs(r.bottom - er.bottom) <= tol):
                     return None
+                # Chromium 地址栏的像素映射残缺：任意 offset 的折叠 range 都返回文本开头
+                # 矩形。caret offset>0 却落在文本起点 → 数据自相矛盾，拒收
+                try:
+                    doc = pattern.DocumentRange
+                    offset = range0.CompareEndpoints(0, doc, 0)
+                    if offset > 0:
+                        probe = doc.Clone()
+                        probe.MoveEndpointByRange(1, probe, 0)
+                        start_rects = probe.GetBoundingRectangles()
+                        if start_rects:
+                            s = start_rects[0]
+                            if abs(r.left - s.left) <= tol and abs(r.top - s.top) <= tol:
+                                return None
+                except Exception:
+                    pass
                 return int(r.left), int(r.top), int(r.bottom - r.top)
         except Exception: pass
         return None

@@ -9,7 +9,8 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationTextPattern2, UIA_TextPattern2Id, UIA_TextPatternId,
+    IUIAutomationTextPattern2, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+    UIA_TextPattern2Id, UIA_TextPatternId,
 };
 use windows::Win32::UI::Input::Ime::{
     CFS_POINT, COMPOSITIONFORM, ImmGetCompositionWindow, ImmGetContext, ImmReleaseContext,
@@ -49,6 +50,36 @@ fn rect_covers_element(focused: &IUIAutomationElement, l: f64, t: f64, w: f64, h
                 && (t + h - r.bottom as f64).abs() <= TOL
         }
         Err(_) => false,
+    }
+}
+
+/// 取文档起点（offset 0）折叠后的矩形。Chromium 地址栏（OmniboxViewViews）的
+/// 像素映射残缺：任意 offset 的折叠 range 都返回这个矩形（实测 offset 0..N 全等），
+/// 配合 caret offset 做矛盾检测。
+fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)> {
+    unsafe {
+        let doc = text_pattern.DocumentRange().ok()?;
+        let probe = doc.Clone().ok()?;
+        probe
+            .MoveEndpointByRange(TextPatternRangeEndpoint_End, &probe, TextPatternRangeEndpoint_Start)
+            .ok()?;
+        let rects = probe.GetBoundingRectangles().ok()?;
+        if rects.is_null() {
+            return None;
+        }
+        let lower = SafeArrayGetLBound(&*rects, 1).ok()?;
+        let upper = SafeArrayGetUBound(&*rects, 1).ok()?;
+        if upper - lower + 1 < 2 {
+            return None;
+        }
+        let mut p = std::ptr::null_mut();
+        if SafeArrayAccessData(&*rects, &mut p).is_err() {
+            return None;
+        }
+        let d = std::slice::from_raw_parts(p as *const f64, 2);
+        let pt = (d[0], d[1]);
+        let _ = SafeArrayUnaccessData(&*rects);
+        Some(pt)
     }
 }
 
@@ -329,6 +360,26 @@ impl CaretDetector {
                 }
             };
 
+            // 非零宽选区（如 Ctrl+L 全选地址栏、拖选文本）的边界矩形是选中内容的
+            // 整体矩形，不是光标位置；折叠到选区起点（打字替换发生的位置）再取竖线
+            match range.GetText(1) {
+                Ok(t) if !t.is_empty() => {
+                    if let Err(e) = range.MoveEndpointByRange(
+                        TextPatternRangeEndpoint_End,
+                        &range,
+                        TextPatternRangeEndpoint_Start,
+                    ) {
+                        append_error(&mut self.last_uia_error, format!("Sel:Collapse:{:X}", e.code().0 as u32));
+                        return None;
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    append_error(&mut self.last_uia_error, format!("Sel:Text:{:X}", e.code().0 as u32));
+                    return None;
+                }
+            }
+
             // 获取边界矩形
             let rects = match range.GetBoundingRectangles() {
                 Ok(r) => r,
@@ -361,9 +412,26 @@ impl CaretDetector {
             }
 
             let doubles = std::slice::from_raw_parts(data_ptr as *const f64, elem_count);
+            // caret offset（文本模型，地址栏也正确）；只有像素映射是坏的
+            let caret_offset = text_pattern
+                .DocumentRange()
+                .ok()
+                .and_then(|doc| {
+                    range.CompareEndpoints(TextPatternRangeEndpoint_Start, &doc, TextPatternRangeEndpoint_Start).ok()
+                })
+                .unwrap_or(0);
             let result = if rect_covers_element(&focused, doubles[0], doubles[1], doubles[2], doubles[3]) {
                 append_error(&mut self.last_uia_error, "Sel:EmptyField".to_string());
                 None
+            } else if caret_offset > 0 {
+                match doc_start_rect(&text_pattern) {
+                    // offset>0 却落在文本起点：像素映射矛盾（Chromium 地址栏），拒收
+                    Some((sl, st)) if (doubles[0] - sl).abs() <= 2.0 && (doubles[1] - st).abs() <= 2.0 => {
+                        append_error(&mut self.last_uia_error, "Sel:BrokenPixelMap".to_string());
+                        None
+                    }
+                    _ => Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32)),
+                }
             } else {
                 Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32))
             };
