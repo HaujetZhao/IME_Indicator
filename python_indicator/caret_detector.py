@@ -1,8 +1,6 @@
 import ctypes
 from ctypes import byref, sizeof, wintypes, Structure, POINTER
-from win32_api import (
-    user32, oleacc, imm32, GUITHREADINFO, OBJID_CARET, COMPOSITIONFORM, CFS_POINT
-)
+from win32_api import user32, oleacc, GUITHREADINFO, OBJID_CARET
 import uiautomation as auto
 
 # 禁用 uiautomation 的一些冗长输出
@@ -38,11 +36,7 @@ class CaretDetector:
             pos = self._get_pos_via_uia()
             if pos: return pos
 
-            # 第三级：IME 组合框
-            pos = self._get_pos_via_ime()
-            if pos: return pos
-
-            # 第四级：MSAA
+            # 第三级：MSAA
             pos = self._get_pos_via_msaa()
             if pos: return pos
         except Exception:
@@ -100,22 +94,6 @@ class CaretDetector:
                     pass
                 return int(r.left), int(r.top), int(r.bottom - r.top)
         except Exception: pass
-        return None
-
-    def _get_pos_via_ime(self):
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd: return None
-        h_imc = imm32.ImmGetContext(hwnd)
-        if h_imc:
-            comp_form = COMPOSITIONFORM()
-            pos = None
-            if imm32.ImmGetCompositionWindow(h_imc, byref(comp_form)):
-                if comp_form.dwStyle & CFS_POINT:
-                    pt = wintypes.POINT(comp_form.ptCurrentPos.x, comp_form.ptCurrentPos.y)
-                    user32.ClientToScreen(hwnd, byref(pt))
-                    pos = (pt.x, pt.y, 20)
-            imm32.ImmReleaseContext(hwnd, h_imc)
-            return pos
         return None
 
     def _get_pos_via_msaa(self):

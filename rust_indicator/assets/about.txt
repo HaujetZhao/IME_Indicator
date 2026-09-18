@@ -4,4 +4,4 @@
 
 GitHub: https://github.com/HaujetZhao/IME_Indicator
 作者：Antigravity & Haujet
-版本：v0.2.1
+版本：v0.3.0

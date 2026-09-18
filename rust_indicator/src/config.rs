@@ -48,7 +48,9 @@ impl Default for Config {
             caret_offset_x: 0,
             caret_offset_y: 0,
             caret_show_en: true,
-            caret_methods: ["gui_info", "uia_caret_range", "uia_selection", "ime", "msaa"]
+            // 实测（2026-09）：uia_caret_range 与 ime 在所有测试场景均拿不到数据，
+            // 默认不启用；保留代码以便通过配置实验
+            caret_methods: ["gui_info", "uia_selection", "msaa"]
                 .iter().map(|s| s.to_string()).collect(),
             mouse_enable: true,
             mouse_color_cn: parse_color("#FF7800A0"),
@@ -206,8 +208,9 @@ size = 8                    # 提示球大小
 offset_x = 0
 offset_y = 0
 show_en = true              # 英文状态下是否显示
-# 光标检测方法及落级顺序（可删减、可调序；可选: gui_info, uia_caret_range, uia_selection, ime, msaa）
-methods = ["gui_info", "uia_caret_range", "uia_selection", "ime", "msaa"]
+# 光标检测方法及落级顺序（可删减、可调序）
+# 可选: gui_info(记事本等原生) uia_selection(浏览器/VS Code) msaa(浏览器 caret 对象)
+methods = ["gui_info", "uia_selection", "msaa"]
 
 [mouse]
 enable = true               # 是否开启鼠标提示
