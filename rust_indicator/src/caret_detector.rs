@@ -79,40 +79,14 @@ fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)>
     }
 }
 
-/// uia_selection 级的可编辑性校验：网页正文等不可输入位置也有文本选区，
-/// 不校验会误显示。ControlType/ValuePattern 查询失败按拒绝处理（外部数据，失败即不可信）。
-fn is_editable(focused: &IUIAutomationElement, mode: crate::config::EditableCheck) -> bool {
-    use windows::Win32::UI::Accessibility::{
-        IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
-        UIA_ValuePatternId,
-    };
-    use crate::config::EditableCheck;
-
-    if mode == EditableCheck::Off {
-        return true;
-    }
-    let control_type = match unsafe { focused.CurrentControlType() } {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    if control_type == UIA_EditControlTypeId {
-        return true;
-    }
-    if control_type == UIA_DocumentControlTypeId && mode == EditableCheck::EditOrDocument {
-        // 可编辑文档（Word/contenteditable）：支持 ValuePattern 且非只读；
-        // 网页正文拿不到 ValuePattern（或只读），在这里被拒
-        return matches!(
-            unsafe {
-                focused
-                    .GetCurrentPattern(UIA_ValuePatternId)
-                    .ok()
-                    .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
-                    .map(|vp| vp.CurrentIsReadOnly())
-            },
-            Some(Ok(ro)) if !ro.as_bool()
-        );
-    }
-    false
+/// uia_selection 级的可编辑性校验：只接受焦点元素为 Edit（浏览器输入框、VS Code）。
+/// 网页正文等不可输入位置也有文本选区，不校验会误显示。
+/// ControlType 查询失败按拒绝处理（外部数据，失败即不可信）。
+fn is_editable(focused: &IUIAutomationElement) -> bool {
+    use windows::Win32::UI::Accessibility::UIA_EditControlTypeId;
+    unsafe { focused.CurrentControlType() }
+        .map(|t| t == UIA_EditControlTypeId)
+        .unwrap_or(false)
 }
 
 /// 检测来源
@@ -145,6 +119,8 @@ pub struct CaretDetector {
     automation: Option<IUIAutomation>,
     pub last_source: DetectionSource,
     pub last_uia_error: String,
+    /// 本轮检测中 uia 已确认焦点不在可输入位置（只由 uia_selection 级设置）
+    focus_not_editable: bool,
 }
 
 impl CaretDetector {
@@ -163,6 +139,7 @@ impl CaretDetector {
             automation,
             last_source: DetectionSource::None,
             last_uia_error: String::new(),
+            focus_not_editable: false,
         }
     }
 
@@ -173,6 +150,7 @@ impl CaretDetector {
 
     /// 多级检测：按配置的 methods 顺序依次尝试
     fn detect(&mut self) -> Option<CaretPos> {
+        self.focus_not_editable = false;
         for name in crate::config::caret_methods() {
             let Some(method) = DetectionSource::from_name(name) else { continue };
             let pos = match method {
@@ -181,6 +159,12 @@ impl CaretDetector {
                 DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
                 DetectionSource::None => None,
             };
+            // uia 已确认焦点不可编辑：这是"不在可输入位置"的权威答案，
+            // 直接终止，不降级（低级来源可能返回残留的旧光标位置）
+            if self.focus_not_editable {
+                self.last_source = DetectionSource::None;
+                return None;
+            }
             if let Some(pos) = pos {
                 self.last_source = method;
                 return Some(pos);
@@ -237,7 +221,8 @@ impl CaretDetector {
             };
 
             // 可编辑性校验：焦点元素必须位于可输入位置
-            if !is_editable(&focused, crate::config::caret_editable_check()) {
+            self.focus_not_editable = !is_editable(&focused);
+            if self.focus_not_editable {
                 append_error(&mut self.last_uia_error, "Sel:NotEditable".to_string());
                 return None;
             }
