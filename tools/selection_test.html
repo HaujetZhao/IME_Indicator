@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>caret probe</title>
+<style>
+  body { font: 16px/1.8 sans-serif; padding: 24px; }
+  textarea, [contenteditable] { width: 600px; min-height: 80px; border: 1px solid #000; font: 20px/1.8 serif; padding: 8px; }
+  button { margin: 4px 4px 16px 0; }
+</style>
+</head>
+<body>
+  <h2>测试输入框（textarea）</h2>
+  <div>
+    <button onclick="sel('input', 4, 7, 'forward')">选中 efg（左→右）</button>
+    <button onclick="sel('input', 4, 7, 'backward')">选中 efg（右→左）</button>
+    <button onclick="sel('input', 7, 7)">光标到末尾</button>
+  </div>
+  <textarea id="input">abcdefg1234567</textarea>
+
+  <h2>contenteditable</h2>
+  <div>
+    <button onclick="selCE(4, 7)">选中 efg</button>
+  </div>
+  <div id="ce" contenteditable>abcdefg1234567</div>
+
+<script>
+function sel(id, start, end, dir) {
+  const el = document.getElementById(id);
+  el.focus();
+  el.setSelectionRange(start, end, dir);
+}
+function selCE(start, end) {
+  const el = document.getElementById('ce');
+  el.focus();
+  const node = el.firstChild;
+  const r = document.createRange();
+  r.setStart(node, start);
+  r.setEnd(node, end);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+</script>
+</body>
+</html>

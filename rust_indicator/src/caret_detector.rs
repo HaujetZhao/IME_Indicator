@@ -31,6 +31,7 @@ pub type CaretPos = (i32, i32, i32);
 /// 检测来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
+    UiaSelection,
     GuiInfo,
     MsaaFallback,
     None,
@@ -110,14 +111,21 @@ impl CaretDetector {
         self.detect()
     }
 
-    /// 多级检测：按配置的 methods 顺序依次尝试
+    /// 多级检测：选区细化优先，其余按配置的 methods 顺序依次尝试
     fn detect(&mut self) -> Option<CaretPos> {
+        // 有选区时锚定选区右缘（UIA TextPattern）；塌缩光标返回 None，走常规管线
+        if let Some(pos) = self.get_pos_via_uia_selection() {
+            self.last_source = DetectionSource::UiaSelection;
+            return Some(pos);
+        }
+
         for name in crate::config::caret_methods() {
             let Some(method) = DetectionSource::from_name(name) else { continue };
             let pos = match method {
                 DetectionSource::GuiInfo => self.get_pos_via_gui_info(),
                 DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
-                DetectionSource::None => None,
+                // UiaSelection 只作选区细化，不进配置管线
+                DetectionSource::UiaSelection | DetectionSource::None => None,
             };
             if let Some(pos) = pos {
                 self.last_source = method;
@@ -127,6 +135,62 @@ impl CaretDetector {
 
         self.last_source = DetectionSource::None;
         None
+    }
+
+    /// 通过 UIA TextPattern 检测选区：有真实选区时返回选区右下角 (右缘 x, 顶 y, 高 h)。
+    /// 塌缩光标（无选区）按文档返回空数组，Chromium 则返回 1px 线矩形——一律返回 None，
+    /// 由调用方走常规管线。返回矩形为屏幕物理像素。
+    fn get_pos_via_uia_selection(&mut self) -> Option<CaretPos> {
+        use windows::Win32::System::Ole::{
+            SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+            SafeArrayUnaccessData,
+        };
+        use windows::Win32::UI::Accessibility::{IUIAutomationTextPattern, UIA_TextPatternId};
+
+        let automation = self.automation.as_ref()?;
+        let focused = unsafe { automation.GetFocusedElement() }.ok()?;
+        let pattern = unsafe { focused.GetCurrentPattern(UIA_TextPatternId) }
+            .ok()
+            .and_then(|p| p.cast::<IUIAutomationTextPattern>().ok())?;
+        let selection = unsafe { pattern.GetSelection() }.ok()?;
+
+        // 跨所有选区段取最后一个有效矩形（w > 1.5px 才算真实选区，单行选区即其右下角，
+        // 多行选区最后一个矩形是末行，右缘即选区视觉末尾）
+        let mut last = None;
+        for i in 0..unsafe { selection.Length() }.ok()? {
+            let elem = unsafe { selection.GetElement(i) };
+            let Ok(range) = elem else { continue };
+            let rects_result = unsafe { range.GetBoundingRectangles() };
+            let Ok(psa) = rects_result else { continue };
+            if psa.is_null() {
+                continue;
+            }
+            // 解包 VT_R8 扁平数组，每矩形 4 个 double: left, top, width, height
+            let rects: Option<Vec<(f64, f64, f64, f64)>> = (|| {
+                let lower = unsafe { SafeArrayGetLBound(psa, 1) }.ok()?;
+                let upper = unsafe { SafeArrayGetUBound(psa, 1) }.ok()?;
+                let n = (upper - lower + 1) as usize;
+                if n < 4 {
+                    return None;
+                }
+                let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+                unsafe { SafeArrayAccessData(psa, &mut data) }.ok()?;
+                let doubles = unsafe { std::slice::from_raw_parts(data as *const f64, n) };
+                let out: Vec<_> = doubles.chunks_exact(4).map(|c| (c[0], c[1], c[2], c[3])).collect();
+                unsafe { SafeArrayUnaccessData(psa) }.ok()?;
+                Some(out)
+            })();
+            let _ = unsafe { SafeArrayDestroy(psa) };
+
+            if let Some(rects) = rects {
+                for (l, t, w, h) in rects {
+                    if w > 1.5 && h > 0.0 {
+                        last = Some((l + w, t, h as i32));
+                    }
+                }
+            }
+        }
+        last.map(|(x, y, h)| (x as i32, y as i32, h))
     }
 
     /// 通过 GetGUIThreadInfo 获取光标位置
