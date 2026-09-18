@@ -45,11 +45,7 @@ class CaretDetector:
             pos = self._get_pos_via_gui_info()
             if pos: return pos
 
-            # 第二级：UI Automation (支持 VS Code, Chrome)
-            pos = self._get_pos_via_uia()
-            if pos: return pos
-
-            # 第三级：MSAA
+            # 第二级：MSAA (支持浏览器/VS Code)
             pos = self._get_pos_via_msaa()
             if pos: return pos
         except Exception:
@@ -65,48 +61,6 @@ class CaretDetector:
                 user32.ClientToScreen(gui_info.hwndCaret, byref(pt))
                 h = gui_info.rcCaret.bottom - gui_info.rcCaret.top
                 return pt.x, pt.y, h
-        return None
-
-    def _get_pos_via_uia(self):
-        try:
-            focus = auto.GetFocusedControl()
-            if not focus: return None
-            pattern = focus.GetTextPattern()
-            if not pattern: return None
-            sel_ranges = pattern.GetSelection()
-            if not sel_ranges or len(sel_ranges) == 0: return None
-            range0 = sel_ranges[0]
-            # 非零宽选区（如 Ctrl+L 全选地址栏）的矩形是选中内容整体矩形而非光标，
-            # 折叠到选区起点再取竖线（uiautomation 无 Collapse，用 MoveEndpointByRange）
-            if range0.GetText(1):
-                range0.MoveEndpointByRange(1, range0.textRange, 0)
-            rects = range0.GetBoundingRectangles()
-            if rects and len(rects) > 0:
-                r = rects[0]
-                # Chromium 把空输入框表示为单个 U+FFFC 对象字符，此时选区矩形=整个元素矩形
-                # 而非光标位置，拒收（有字符时是零宽竖线矩形）
-                er = focus.BoundingRectangle
-                tol = 2
-                if (abs(r.left - er.left) <= tol and abs(r.top - er.top) <= tol
-                        and abs(r.right - er.right) <= tol and abs(r.bottom - er.bottom) <= tol):
-                    return None
-                # Chromium 地址栏的像素映射残缺：任意 offset 的折叠 range 都返回文本开头
-                # 矩形。caret offset>0 却落在文本起点 → 数据自相矛盾，拒收
-                try:
-                    doc = pattern.DocumentRange
-                    offset = range0.CompareEndpoints(0, doc, 0)
-                    if offset > 0:
-                        probe = doc.Clone()
-                        probe.MoveEndpointByRange(1, probe, 0)
-                        start_rects = probe.GetBoundingRectangles()
-                        if start_rects:
-                            s = start_rects[0]
-                            if abs(r.left - s.left) <= tol and abs(r.top - s.top) <= tol:
-                                return None
-                except Exception:
-                    pass
-                return int(r.left), int(r.top), int(r.bottom - r.top)
-        except Exception: pass
         return None
 
     def _get_pos_via_msaa(self):

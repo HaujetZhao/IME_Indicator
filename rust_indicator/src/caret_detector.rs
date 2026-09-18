@@ -4,13 +4,8 @@
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
-use windows::Win32::System::Ole::{
-    SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayUnaccessData,
-};
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, UIA_TextPatternId,
-};
+use windows::Win32::UI::Accessibility::CUIAutomation;
+use windows::Win32::UI::Accessibility::IUIAutomation;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO,
 };
@@ -33,57 +28,10 @@ const IID_IACCESSIBLE: u128 = 0x618736e0_3c3d_11cf_810c_00aa00389b71;
 /// 光标位置信息 (x, y, height)
 pub type CaretPos = (i32, i32, i32);
 
-/// Chromium 把空输入框表示为单个 U+FFFC 对象替换字符，此时选区/插入单元的
-/// 边界矩形等于整个元素矩形，不是光标位置（实测：空字段时二者完全相等，
-/// 有字符时为零宽竖线）。拒收这种假矩形，让检测落到下一级。
-fn rect_covers_element(focused: &IUIAutomationElement, l: f64, t: f64, w: f64, h: f64) -> bool {
-    const TOL: f64 = 2.0;
-    match unsafe { focused.CurrentBoundingRectangle() } {
-        Ok(r) => {
-            (l - r.left as f64).abs() <= TOL
-                && (t - r.top as f64).abs() <= TOL
-                && (l + w - r.right as f64).abs() <= TOL
-                && (t + h - r.bottom as f64).abs() <= TOL
-        }
-        Err(_) => false,
-    }
-}
-
-/// 取文档起点（offset 0）折叠后的矩形。Chromium 地址栏（OmniboxViewViews）的
-/// 像素映射残缺：任意 offset 的折叠 range 都返回这个矩形（实测 offset 0..N 全等），
-/// 配合 caret offset 做矛盾检测。
-fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)> {
-    unsafe {
-        let doc = text_pattern.DocumentRange().ok()?;
-        let probe = doc.Clone().ok()?;
-        probe
-            .MoveEndpointByRange(TextPatternRangeEndpoint_End, &probe, TextPatternRangeEndpoint_Start)
-            .ok()?;
-        let rects = probe.GetBoundingRectangles().ok()?;
-        if rects.is_null() {
-            return None;
-        }
-        let lower = SafeArrayGetLBound(&*rects, 1).ok()?;
-        let upper = SafeArrayGetUBound(&*rects, 1).ok()?;
-        if upper - lower + 1 < 2 {
-            return None;
-        }
-        let mut p = std::ptr::null_mut();
-        if SafeArrayAccessData(&*rects, &mut p).is_err() {
-            return None;
-        }
-        let d = std::slice::from_raw_parts(p as *const f64, 2);
-        let pt = (d[0], d[1]);
-        let _ = SafeArrayUnaccessData(&*rects);
-        Some(pt)
-    }
-}
-
 /// 检测来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
     GuiInfo,
-    UiAutomation,
     MsaaFallback,
     None,
 }
@@ -93,7 +41,6 @@ impl DetectionSource {
     fn from_name(s: &str) -> Option<Self> {
         match s {
             "gui_info" => Some(DetectionSource::GuiInfo),
-            "uia_selection" => Some(DetectionSource::UiAutomation),
             "msaa" => Some(DetectionSource::MsaaFallback),
             _ => None,
         }
@@ -169,7 +116,6 @@ impl CaretDetector {
             let Some(method) = DetectionSource::from_name(name) else { continue };
             let pos = match method {
                 DetectionSource::GuiInfo => self.get_pos_via_gui_info(),
-                DetectionSource::UiAutomation => self.get_pos_via_uia_selection(),
                 DetectionSource::MsaaFallback => self.get_pos_via_msaa_fallback(),
                 DetectionSource::None => None,
             };
@@ -204,151 +150,6 @@ impl CaretDetector {
             }
         }
         None
-    }
-
-    /// 通过 UI Automation TextPattern GetSelection 获取光标位置 (浏览器/VS Code)
-    fn get_pos_via_uia_selection(&mut self) -> Option<CaretPos> {
-        let automation = self.automation.as_ref()?;
-        
-        // 追加错误信息的辅助闭包
-        let append_error = |s: &mut String, new: String| {
-            if !s.is_empty() {
-                s.push_str(" | ");
-            }
-            s.push_str(&new);
-        };
-
-        unsafe {
-            // 获取焦点元素
-            let focused = match automation.GetFocusedElement() {
-                Ok(f) => f,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Focus:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-
-            // 尝试获取 TextPattern
-            let pattern_obj = match focused.GetCurrentPattern(UIA_TextPatternId) {
-                Ok(p) => p,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Pat:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-            
-            let text_pattern: IUIAutomationTextPattern = match pattern_obj.cast() {
-                Ok(t) => t,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Cast:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-
-            // 获取选区
-            let selection = match text_pattern.GetSelection() {
-                Ok(s) => s,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Sel:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-            
-            let count = selection.Length().unwrap_or(0);
-            if count == 0 {
-                append_error(&mut self.last_uia_error, "Sel:NoSel".to_string());
-                return None;
-            }
-
-            // 获取第一个选区范围
-            let range = match selection.GetElement(0) {
-                Ok(r) => r,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Range:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-
-            // 非零宽选区（如 Ctrl+L 全选地址栏、拖选文本）的边界矩形是选中内容的
-            // 整体矩形，不是光标位置；折叠到选区起点（打字替换发生的位置）再取竖线
-            match range.GetText(1) {
-                Ok(t) if !t.is_empty() => {
-                    if let Err(e) = range.MoveEndpointByRange(
-                        TextPatternRangeEndpoint_End,
-                        &range,
-                        TextPatternRangeEndpoint_Start,
-                    ) {
-                        append_error(&mut self.last_uia_error, format!("Sel:Collapse:{:X}", e.code().0 as u32));
-                        return None;
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Text:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            }
-
-            // 获取边界矩形
-            let rects = match range.GetBoundingRectangles() {
-                Ok(r) => r,
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, format!("Sel:Rect:{:X}", e.code().0 as u32));
-                    return None;
-                }
-            };
-
-            if rects.is_null() {
-                append_error(&mut self.last_uia_error, "Sel:Null".to_string());
-                return None;
-            }
-
-            // 使用 SafeArray API 访问数据
-            let lower = SafeArrayGetLBound(&*rects, 1).ok()?;
-            let upper = SafeArrayGetUBound(&*rects, 1).ok()?;
-            let elem_count = (upper - lower + 1) as usize;
-
-            if elem_count < 4 {
-                append_error(&mut self.last_uia_error, format!("Sel:Cnt:{}", elem_count));
-                return None;
-            }
-
-            // 访问数据
-            let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            if SafeArrayAccessData(&*rects, &mut data_ptr).is_err() {
-                append_error(&mut self.last_uia_error, "Sel:Access".to_string());
-                return None;
-            }
-
-            let doubles = std::slice::from_raw_parts(data_ptr as *const f64, elem_count);
-            // caret offset（文本模型，地址栏也正确）；只有像素映射是坏的
-            let caret_offset = text_pattern
-                .DocumentRange()
-                .ok()
-                .and_then(|doc| {
-                    range.CompareEndpoints(TextPatternRangeEndpoint_Start, &doc, TextPatternRangeEndpoint_Start).ok()
-                })
-                .unwrap_or(0);
-            let result = if rect_covers_element(&focused, doubles[0], doubles[1], doubles[2], doubles[3]) {
-                append_error(&mut self.last_uia_error, "Sel:EmptyField".to_string());
-                None
-            } else if caret_offset > 0 {
-                match doc_start_rect(&text_pattern) {
-                    // offset>0 却落在文本起点：像素映射矛盾（Chromium 地址栏），拒收
-                    Some((sl, st)) if (doubles[0] - sl).abs() <= 2.0 && (doubles[1] - st).abs() <= 2.0 => {
-                        append_error(&mut self.last_uia_error, "Sel:BrokenPixelMap".to_string());
-                        None
-                    }
-                    _ => Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32)),
-                }
-            } else {
-                Some((doubles[0] as i32, doubles[1] as i32, doubles[3] as i32))
-            };
-
-            let _ = SafeArrayUnaccessData(&*rects);
-
-            result
-        }
     }
 
     /// 通过 IME 组合窗口获取光标位置
