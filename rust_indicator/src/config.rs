@@ -10,6 +10,17 @@ use std::sync::OnceLock;
 // 数据结构 (扁平化，删除冗余嵌套)
 // ============================================================================
 
+/// uia_selection 级的可编辑性校验模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditableCheck {
+    /// Edit 直接接受；Document 查 ValuePattern.IsReadOnly，可编辑才接受
+    EditOrDocument,
+    /// 只接受焦点元素为 Edit
+    EditOnly,
+    /// 不校验（旧行为）
+    Off,
+}
+
 pub struct Config {
     pub poll_state_interval_ms: u64,
     pub poll_track_interval_ms: u64,
@@ -24,6 +35,7 @@ pub struct Config {
     pub caret_offset_y: i32,
     pub caret_show_en: bool,
     pub caret_methods: Vec<String>,
+    pub caret_editable_check: EditableCheck,
 
     pub mouse_enable: bool,
     pub mouse_color_cn: u32,
@@ -52,6 +64,7 @@ impl Default for Config {
             // 默认不启用；保留代码以便通过配置实验
             caret_methods: ["gui_info", "uia_selection", "msaa"]
                 .iter().map(|s| s.to_string()).collect(),
+            caret_editable_check: EditableCheck::EditOrDocument,
             mouse_enable: true,
             mouse_color_cn: parse_color("#FF7800A0"),
             mouse_color_en: parse_color("#0078FF30"),
@@ -159,6 +172,13 @@ fn load_config() -> Config {
                 .filter(|s| !s.is_empty()).collect();
             if !list.is_empty() { config.caret_methods = list; }
         }
+        if let Some(v) = get("caret", "editable_check") {
+            config.caret_editable_check = match v.as_str() {
+                "edit_only" => EditableCheck::EditOnly,
+                "off" => EditableCheck::Off,
+                _ => EditableCheck::EditOrDocument,
+            };
+        }
 
         if let Some(v) = get("mouse", "enable") { 
             match v.as_str() {
@@ -211,6 +231,9 @@ show_en = true              # 英文状态下是否显示
 # 光标检测方法及落级顺序（可删减、可调序）
 # 可选: gui_info(记事本等原生) uia_selection(浏览器/VS Code) msaa(浏览器 caret 对象)
 methods = ["gui_info", "uia_selection", "msaa"]
+# uia_selection 级可编辑性校验（拒绝网页正文等不可输入位置的误显示）
+# 可选: edit_or_document(Edit 直接接受，Document 查 IsReadOnly) / edit_only(只认 Edit) / off(不校验)
+editable_check = "edit_or_document"
 
 [mouse]
 enable = true               # 是否开启鼠标提示
@@ -242,6 +265,7 @@ pub fn caret_offset_x() -> i32 { get().caret_offset_x }
 pub fn caret_offset_y() -> i32 { get().caret_offset_y }
 pub fn caret_show_en() -> bool { get().caret_show_en }
 pub fn caret_methods() -> &'static [String] { &get().caret_methods }
+pub fn caret_editable_check() -> EditableCheck { get().caret_editable_check }
 pub fn mouse_enable() -> bool { get().mouse_enable }
 pub fn mouse_color_cn() -> u32 { get().mouse_color_cn }
 pub fn mouse_color_en() -> u32 { get().mouse_color_en }

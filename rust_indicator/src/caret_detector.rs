@@ -79,6 +79,42 @@ fn doc_start_rect(text_pattern: &IUIAutomationTextPattern) -> Option<(f64, f64)>
     }
 }
 
+/// uia_selection 级的可编辑性校验：网页正文等不可输入位置也有文本选区，
+/// 不校验会误显示。ControlType/ValuePattern 查询失败按拒绝处理（外部数据，失败即不可信）。
+fn is_editable(focused: &IUIAutomationElement, mode: crate::config::EditableCheck) -> bool {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        UIA_ValuePatternId,
+    };
+    use crate::config::EditableCheck;
+
+    if mode == EditableCheck::Off {
+        return true;
+    }
+    let control_type = match unsafe { focused.CurrentControlType() } {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    if control_type == UIA_EditControlTypeId {
+        return true;
+    }
+    if control_type == UIA_DocumentControlTypeId && mode == EditableCheck::EditOrDocument {
+        // 可编辑文档（Word/contenteditable）：支持 ValuePattern 且非只读；
+        // 网页正文拿不到 ValuePattern（或只读），在这里被拒
+        return matches!(
+            unsafe {
+                focused
+                    .GetCurrentPattern(UIA_ValuePatternId)
+                    .ok()
+                    .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
+                    .map(|vp| vp.CurrentIsReadOnly())
+            },
+            Some(Ok(ro)) if !ro.as_bool()
+        );
+    }
+    false
+}
+
 /// 检测来源
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
@@ -199,6 +235,12 @@ impl CaretDetector {
                     return None;
                 }
             };
+
+            // 可编辑性校验：焦点元素必须位于可输入位置
+            if !is_editable(&focused, crate::config::caret_editable_check()) {
+                append_error(&mut self.last_uia_error, "Sel:NotEditable".to_string());
+                return None;
+            }
 
             // 尝试获取 TextPattern
             let pattern_obj = match focused.GetCurrentPattern(UIA_TextPatternId) {

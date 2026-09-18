@@ -54,10 +54,25 @@ class CaretDetector:
                 return pt.x, pt.y, h
         return None
 
+    def _is_editable(self, focus) -> bool:
+        """uia 级可编辑性校验：Edit 直接接受；Document 查 ValuePattern.IsReadOnly"""
+        try:
+            ct = focus.ControlType
+            if ct == auto.ControlType.EditControl:
+                return True
+            if ct == auto.ControlType.DocumentControl:
+                vp = focus.GetValuePattern()
+                return vp is not None and not vp.IsReadOnly
+        except Exception:
+            return False
+        return False
+
     def _get_pos_via_uia(self):
         try:
             focus = auto.GetFocusedControl()
             if not focus: return None
+            # 可编辑性校验：网页正文等不可输入位置也有文本选区，拒收
+            if not self._is_editable(focus): return None
             pattern = focus.GetTextPattern()
             if not pattern: return None
             sel_ranges = pattern.GetSelection()
