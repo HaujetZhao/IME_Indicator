@@ -25,20 +25,18 @@ class CaretDetector:
             0x81, 0x0C, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71
         )
 
-    def is_focused_editable(self) -> bool:
-        """可见性线：焦点元素是否位于可输入位置，与位置检测并行互不干扰。
-        Edit 直接认可；Document 查 ValuePattern.IsReadOnly；其余与查询失败一律不可编辑。"""
+    def is_readonly_document_focus(self) -> bool:
+        """可见性线（黑名单制）：焦点是否位于只读 Document（浏览器网页正文等）。
+        只隐藏确认不可输入的场景，其余类型与查询失败一律不隐藏。"""
         try:
             focus = auto.GetFocusedControl()
             if not focus: return False
-            ct = focus.ControlType
-            if ct == auto.ControlType.EditControl: return True
-            if ct == auto.ControlType.DocumentControl:
-                vp = focus.GetValuePattern()
-                return vp is not None and not vp.IsReadOnly
+            if focus.ControlType != auto.ControlType.DocumentControl: return False
+            vp = focus.GetValuePattern()
+            if vp is None: return True
+            return bool(vp.IsReadOnly)
         except Exception:
             return False
-        return False
 
     def get_caret_pos(self):
         """核心：多级检测光标位置"""

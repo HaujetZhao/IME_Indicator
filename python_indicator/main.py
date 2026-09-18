@@ -50,9 +50,9 @@ def main():
                 # Caret 状态判断
                 if config.CARET_ENABLE:
                     caret_pos_data = caret_detector.get_caret_pos() # (x, y, h)
-                    # 可见性线：位置有 + 焦点可编辑，两条线都过才显示
+                    # 可见性线（黑名单制）：位置有、且焦点不在只读正文中才显示
                     should_caret = (caret_pos_data is not None
-                                    and caret_detector.is_focused_editable()
+                                    and not caret_detector.is_readonly_document_focus()
                                     and (chinese_mode or config.CARET_SHOW_EN))
                     if should_caret != caret_active:
                         caret_active = should_caret

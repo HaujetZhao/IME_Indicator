@@ -130,14 +130,13 @@ impl CaretDetector {
         }
     }
 
-    /// 可见性线：焦点元素是否位于可输入位置。与位置检测并行，互不干扰——
-    /// 位置管线只管"光标在哪"，可见性由这里单独裁决。
-    /// Edit 直接认可；Document（Word/contenteditable）查 ValuePattern.IsReadOnly；
-    /// 其余（网页正文、按钮等）与查询失败一律按不可编辑处理（外部数据，失败即不可信）。
-    pub fn is_focused_editable(&self) -> bool {
+    /// 可见性线（黑名单制）：只在确认焦点位于"不可输入的位置"时返回 true。
+    /// 目前已知唯一误显示来源是浏览器网页正文——焦点元素是只读 Document
+    /// （无 ValuePattern 或只读）；Word/contenteditable 是非只读 Document，正常显示。
+    /// 其余类型（Edit、按钮、终端……）与任何查询失败都按不隐藏处理，默认显示。
+    pub fn focus_is_readonly_document(&self) -> bool {
         use windows::Win32::UI::Accessibility::{
-            IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
-            UIA_ValuePatternId,
+            IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_ValuePatternId,
         };
         let Some(automation) = self.automation.as_ref() else {
             return false;
@@ -145,25 +144,18 @@ impl CaretDetector {
         let Ok(focused) = (unsafe { automation.GetFocusedElement() }) else {
             return false;
         };
-        let Ok(t) = (unsafe { focused.CurrentControlType() }) else {
+        let is_document = (unsafe { focused.CurrentControlType() })
+            .map_or(false, |t| t == UIA_DocumentControlTypeId);
+        if !is_document {
             return false;
-        };
-        if t == UIA_EditControlTypeId {
-            return true;
         }
-        if t == UIA_DocumentControlTypeId {
-            return matches!(
-                unsafe {
-                    focused
-                        .GetCurrentPattern(UIA_ValuePatternId)
-                        .ok()
-                        .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
-                        .map(|vp| vp.CurrentIsReadOnly())
-                },
-                Some(Ok(ro)) if !ro.as_bool()
-            );
+        let value_pattern = unsafe { focused.GetCurrentPattern(UIA_ValuePatternId) }
+            .ok()
+            .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok());
+        match value_pattern {
+            Some(vp) => matches!(unsafe { vp.CurrentIsReadOnly() }, Ok(ro) if ro.as_bool()),
+            None => true,
         }
-        false
     }
 
     /// 核心：按配置管线检测光标位置
