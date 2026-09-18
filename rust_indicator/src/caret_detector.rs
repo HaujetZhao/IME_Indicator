@@ -205,7 +205,8 @@ impl CaretDetector {
                 match acc.accLocation(&mut x, &mut y, &mut w, &mut h, &var_child) {
                     Ok(_) => {
                         if x != 0 || y != 0 {
-                            return Some((x, y, h));
+                            // 有选区时 caret 对象矩形覆盖整个选区（光标在选区末尾），取右缘
+                            return Some((x + w, y, h));
                         } else {
                             append_error(&mut self.last_uia_error, "MSAA:Zero");
                         }

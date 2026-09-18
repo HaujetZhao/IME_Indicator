@@ -77,7 +77,8 @@ class CaretDetector:
                 if accLocation_func(p_acc, byref(x), byref(y), byref(w), byref(h), var_child) == 0:
                     release_func = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(vtable_ptr[2])
                     release_func(p_acc)
-                    if x.value != 0 or y.value != 0: return x.value, y.value, h.value
+                    # 有选区时 caret 对象矩形覆盖整个选区（光标在选区末尾），取右缘
+                    if x.value != 0 or y.value != 0: return x.value + w.value, y.value, h.value
                 release_func = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(vtable_ptr[2])
                 release_func(p_acc)
         except Exception: pass
