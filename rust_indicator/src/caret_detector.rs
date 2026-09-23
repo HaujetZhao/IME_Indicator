@@ -55,7 +55,6 @@ impl DetectionSource {
 pub struct CaretDetector {
     automation: Option<IUIAutomation>,
     pub last_source: DetectionSource,
-    pub last_uia_error: String,
 }
 
 impl CaretDetector {
@@ -73,7 +72,6 @@ impl CaretDetector {
         Self {
             automation,
             last_source: DetectionSource::None,
-            last_uia_error: String::new(),
         }
     }
 
@@ -163,18 +161,9 @@ impl CaretDetector {
         use windows::core::GUID;
         use windows::core::VARIANT;
 
-        // 追加错误信息
-        let append_error = |s: &mut String, new: &str| {
-            if !s.is_empty() {
-                s.push_str(" | ");
-            }
-            s.push_str(new);
-        };
-
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.0.is_null() {
-                append_error(&mut self.last_uia_error, "MSAA:NoHwnd");
                 return None;
             }
 
@@ -191,10 +180,8 @@ impl CaretDetector {
             );
 
             if result.is_err() {
-                append_error(&mut self.last_uia_error, &format!("MSAA:Err:{:X}", result.unwrap_err().code().0 as u32));
                 return None;
             } else if p_acc.is_none() {
-                append_error(&mut self.last_uia_error, "MSAA:NoAcc");
                 return None;
             }
 
@@ -215,14 +202,10 @@ impl CaretDetector {
                         // 有选区时 caret 对象矩形覆盖整个选区（光标在选区末尾），取右缘
                         return Some((x + w, y, h));
                     } else {
-                        append_error(&mut self.last_uia_error, "MSAA:Zero");
                         None
                     }
                 }
-                Err(e) => {
-                    append_error(&mut self.last_uia_error, &format!("MSAA:Loc:{:X}", e.code().0 as u32));
-                    None
-                }
+                Err(_) => None,
             }
         }
     }
@@ -238,7 +221,8 @@ impl Default for CaretDetector {
 /// (NONCLIENTMETRICS.lfMessageFont,即 tkinter 默认字体对应的 Segoe UI)。
 fn font_height(hwnd: HWND) -> Option<i32> {
     use windows::Win32::Graphics::Gdi::{
-        CreateFontIndirectW, GetDC, GetTextMetricsW, ReleaseDC, SelectObject, HFONT, TEXTMETRICW,
+        CreateFontIndirectW, DeleteObject, GetDC, GetTextMetricsW, ReleaseDC, SelectObject, HFONT,
+        TEXTMETRICW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         SendMessageW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -247,8 +231,10 @@ fn font_height(hwnd: HWND) -> Option<i32> {
 
     unsafe {
         let font = SendMessageW(hwnd, WM_GETFONT, None, None);
-        let hfont: HFONT = if font.0 != 0 {
-            HFONT(font.0 as *mut _)
+        // WM_GETFONT 返回 0(自绘窗口)时需自建字体,用完必须删除,
+        // 否则每 10ms 泄漏一个 GDI 对象,约 100 秒顶满进程上限
+        let (hfont, created): (HFONT, bool) = if font.0 != 0 {
+            (HFONT(font.0 as *mut _), false)
         } else {
             let mut ncm = NONCLIENTMETRICSW::default();
             ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
@@ -259,7 +245,10 @@ fn font_height(hwnd: HWND) -> Option<i32> {
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
             )
             .ok()?;
-            HFONT(CreateFontIndirectW(&ncm.lfMessageFont).0)
+            (
+                HFONT(CreateFontIndirectW(&ncm.lfMessageFont).0),
+                true,
+            )
         };
         let hdc = GetDC(hwnd);
         let old = SelectObject(hdc, hfont);
@@ -267,6 +256,9 @@ fn font_height(hwnd: HWND) -> Option<i32> {
         let ok = GetTextMetricsW(hdc, &mut tm).as_bool();
         SelectObject(hdc, old);
         ReleaseDC(hwnd, hdc);
+        if created {
+            let _ = DeleteObject(hfont);
+        }
         ok.then_some(tm.tmHeight)
     }
 }
