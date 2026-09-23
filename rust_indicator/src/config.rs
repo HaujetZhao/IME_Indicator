@@ -42,8 +42,8 @@ impl Default for Config {
             poll_track_interval_ms: 10,
             tray_enable: true,
             caret_enable: true,
-            caret_color_cn: parse_color("#FF7800A0"),
-            caret_color_en: parse_color("#0078FF30"),
+            caret_color_cn: parse_color("#FF7800dd"),
+            caret_color_en: parse_color("#0077ffdd"),
             caret_size: 8,
             caret_offset_x: 0,
             caret_offset_y: 0,
@@ -52,8 +52,8 @@ impl Default for Config {
             caret_methods: ["gui_info", "msaa_caret"]
                 .iter().map(|s| s.to_string()).collect(),
             mouse_enable: true,
-            mouse_color_cn: parse_color("#FF7800A0"),
-            mouse_color_en: parse_color("#0078FF30"),
+            mouse_color_cn: parse_color("#FF7800dd"),
+            mouse_color_en: parse_color("#0077ffdd"),
             mouse_size: 8,
             mouse_offset_x: 2,
             mouse_offset_y: 18,
@@ -201,8 +201,8 @@ enable = true               # 是否显示托盘图标 (false 时完全后台运
 
 [caret]
 enable = true               # 是否启用文本光标提示
-color_cn = "#FF7800A0"    # 中文状态颜色 (#RRGGBBAA)
-color_en = "#0078FF30"    # 英文状态颜色
+color_cn = "#FF7800dd"    # 中文状态颜色 (#RRGGBBAA)
+color_en = "#0077ffdd"    # 英文状态颜色
 size = 8                    # 提示球大小
 offset_x = 0
 offset_y = 0
@@ -213,8 +213,8 @@ methods = ["gui_info", "msaa_caret"]
 
 [mouse]
 enable = true               # 是否开启鼠标提示
-color_cn = "#FF7800A0"    # 中文状态颜色
-color_en = "#0078FF30"    # 英文状态颜色
+color_cn = "#FF7800dd"    # 中文状态颜色
+color_en = "#0077ffdd"    # 英文状态颜色
 size = 8                    # 提示球大小
 offset_x = 2
 offset_y = 18
