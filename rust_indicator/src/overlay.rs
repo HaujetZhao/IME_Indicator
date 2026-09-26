@@ -7,8 +7,9 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    GdipCreateFromHDC, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics,
-    GdipFillEllipse, GdipSetSmoothingMode, GdiplusShutdown, GdiplusStartup,
+    CompositingModeSourceCopy, CompositingModeSourceOver, GdipCreateFromHDC,
+    GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipFillEllipse,
+    GdipSetCompositingMode, GdipSetSmoothingMode, GdiplusShutdown, GdiplusStartup,
     GdiplusStartupInput, GpBrush, GpGraphics, GpSolidFill, SmoothingModeAntiAlias,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -171,21 +172,36 @@ impl IndicatorOverlay {
 
             let old_bitmap = SelectObject(mem_dc, h_bitmap);
 
-            // GDI+ 绘制
+            // GDI+ 绘制（◉ 造型：外环 + 中心内点）
             let mut graphics: *mut GpGraphics = null_mut();
             GdipCreateFromHDC(mem_dc, &mut graphics);
             GdipSetSmoothingMode(graphics, SmoothingModeAntiAlias);
 
+            let s = self.size as f32;
+            // GDI+ 渲染偏移补偿：实测该管线（DIB+抗锯齿）会把图形渲染到几何位置
+            // 右下约 0.6px 处，导致右/下缘圆弧收尾被窗口裁平（右下缺口），故反向平移。
+            let off = -0.6;
+            let gap_d = s * 0.72; // 环缝外径（字符 ◉ 实测比例）
+            let dot_d = s * 0.58; // 中心内点直径
+            let gap_off = off + (s - gap_d) / 2.0;
+            let dot_off = off + (s - dot_d) / 2.0;
+
             let mut brush: *mut GpSolidFill = null_mut();
             GdipCreateSolidFill(color, &mut brush);
-            GdipFillEllipse(
-                graphics,
-                brush as *mut GpBrush,
-                0.0,
-                0.0,
-                self.size as f32,
-                self.size as f32,
-            );
+
+            // 1) 外圆
+            GdipFillEllipse(graphics, brush as *mut GpBrush, off, off, s, s);
+
+            // 2) 擦出环缝（透明填充 + SourceCopy 直接覆盖像素）
+            let mut punch: *mut GpSolidFill = null_mut();
+            GdipCreateSolidFill(0x00000000, &mut punch);
+            GdipSetCompositingMode(graphics, CompositingModeSourceCopy);
+            GdipFillEllipse(graphics, punch as *mut GpBrush, gap_off, gap_off, gap_d, gap_d);
+            GdipDeleteBrush(punch as *mut GpBrush);
+
+            // 3) 中心内点
+            GdipSetCompositingMode(graphics, CompositingModeSourceOver);
+            GdipFillEllipse(graphics, brush as *mut GpBrush, dot_off, dot_off, dot_d, dot_d);
 
             GdipDeleteBrush(brush as *mut GpBrush);
             GdipDeleteGraphics(graphics);
